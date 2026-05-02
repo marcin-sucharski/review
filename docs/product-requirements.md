@@ -1,0 +1,265 @@
+# Product Requirements
+
+## Goal
+
+Build a local CLI review tool that lets a developer inspect code changes in a rich terminal UI, leave line-level comments, and send those comments as actionable feedback to a coding agent.
+
+The tool optimizes for local agent workflows where a human reviews code produced in one tmux pane and sends concise, structured feedback back to that pane.
+
+## Primary User
+
+The primary user is a developer working in a terminal, usually inside tmux, reviewing uncommitted or branch-based changes made by a coding agent.
+
+The user expects keyboard-first navigation, mouse support when convenient, syntax-highlighted diffs, clear line references, and low friction when sending comments back to the agent.
+
+## CLI Contract
+
+The executable command is:
+
+```bash
+review
+```
+
+The command starts an interactive review session in the current working directory.
+
+The first prompt asks for the review source:
+
+- `Uncommitted changes`: review unstaged, staged, and optionally untracked files in the current working tree.
+- `Branch comparison`: review changes against a selected branch, in pull-request style.
+
+The prompt must be usable from a normal terminal and from inside tmux.
+
+## Startup Behavior
+
+The CLI must validate that the current directory is inside a Git repository.
+
+If not inside a Git repository, it exits with a clear error message and a non-zero exit code.
+
+If no changes are available for the selected review source, it reports that no changes were found and exits without opening the TUI.
+
+If Git commands fail, the CLI displays the failing operation and a concise explanation.
+
+When interactive source, branch, or delivery choices are needed, the CLI should render a compact inline menu using only a few terminal lines. Selection uses `Up`, `Down`, and `Enter`; the menu must avoid full-screen dark-background presentation so it remains readable in light terminals.
+
+For branch comparison, the CLI must present or accept a target branch. The default branch detection should prefer the repository's configured upstream/default branch when available, then fall back to common branch names such as `main` and `master`.
+
+## Review Sources
+
+### Uncommitted Changes
+
+The uncommitted review source includes:
+
+- unstaged modified files,
+- staged modified files,
+- added files,
+- deleted files,
+- renamed files,
+- copied files if Git reports them,
+- optionally untracked files if the implementation supports producing content for them.
+
+The implementation must define and test the exact untracked-file behavior. The preferred behavior is to include untracked text files as added files.
+
+### Branch Comparison
+
+The branch comparison review source compares the current `HEAD` against the merge base with the selected target branch.
+
+Preferred Git model:
+
+```bash
+git merge-base HEAD <target-branch>
+git diff --find-renames --find-copies <merge-base>...HEAD
+```
+
+The UI should describe this as PR-style comparison because it mirrors the usual "changes introduced by this branch" workflow.
+
+## TUI Layout
+
+The TUI has two vertical panes.
+
+The left file pane lists modified files as a tree with collapsed directory chains when no modified file exists between the directories.
+
+The right review pane shows a continuous view of all changed files. It is not a separate per-file detail page.
+
+Selecting a file in the file pane scrolls the review pane to that file.
+
+Scrolling the review pane updates the highlighted file in the file pane to match the file currently visible near the top of the review pane.
+
+The currently focused pane must be visually distinct.
+
+## Code Rendering
+
+The review pane must show:
+
+- file headers,
+- syntax-highlighted code,
+- line numbers by default,
+- wrapped lines by default,
+- changed-line markers,
+- comment anchors and inline comment blocks,
+- expansion rows for hidden context.
+
+The default diff context should include surrounding logical code blocks, similar to `git diff -W`. The exact implementation may use Git function context plus additional heuristics, but the visible result should be broader than minimal hunk context.
+
+Supported syntax highlighting must include at least:
+
+- Python,
+- Java,
+- JavaScript,
+- TypeScript,
+- CSS,
+- HTML,
+- JSX,
+- SQL,
+- XML,
+- JSON,
+- `.properties`,
+- YAML,
+- Markdown.
+
+Unknown file types should still display as plain text.
+
+## Navigation
+
+`Tab` moves focus between the file pane and review pane. `T` toggles the file pane between visible and hidden.
+
+In the file pane:
+
+- `Up` and `Down` move through files,
+- `Enter` focuses the selected file in the review pane,
+- mouse click selects and focuses a file.
+
+In the review pane:
+
+- `Up` and `Down` move the selected row or line,
+- `PageUp` and `PageDown` scroll by page,
+- mouse click selects a line or expansion row,
+- `Enter` on code opens a comment input,
+- `Enter` on expansion rows expands hidden context.
+
+`Shift+Up` and `Shift+Down` extend or shrink the current line selection in the review pane.
+
+The UI must keep the selected line visible while navigating. Review-pane arrow navigation should move like an editor: the selection moves inside the viewport first, then scrolling begins near the lower edge with roughly three rows preserved below the selection. Page navigation moves by a viewport while preserving the selected line's screen offset when possible.
+
+## Commenting
+
+Pressing `Enter` on a selected code line opens an inline comment input below the selected line.
+
+If multiple lines are selected, the comment input appears below the selected range.
+
+The comment input behaves like a GitHub-style line comment:
+
+- it is visually attached to the referenced line or range,
+- it supports multi-line text,
+- it can be submitted or canceled,
+- the saved comment appears inline below the referenced range.
+
+Saved comments live in memory for the duration of the session.
+
+Comment rendering must show:
+
+- file path,
+- start line,
+- end line when different from start line,
+- selected context lines,
+- comment body.
+
+The review pane must include a short visual element to the left of each inline comment indicating the referenced section of code.
+
+## Expansion Rows
+
+When visible context does not include the beginning or end of a file, the review pane shows selectable expansion rows.
+
+Expansion row examples:
+
+- `Show 20 lines above`
+- `Show 20 lines below`
+- `Show remaining lines above`
+- `Show remaining lines below`
+
+When selected and activated with `Enter` or mouse click, the row expands up to 20 hidden lines in the corresponding direction.
+
+Expansion must preserve comments, selection, scroll position as much as practical, and file synchronization.
+
+## Quit Flow
+
+The user exits through Vim-style command mode:
+
+1. Press `:`.
+2. Type `q`.
+3. Press `Enter`.
+
+The command parser should be extensible. Initial supported commands:
+
+- `q`
+- `quit`
+
+If unsent comments exist, quitting proceeds to delivery target selection.
+
+If no comments exist, the tool may confirm exit or simply exit depending on final UX choice. The preferred behavior is to ask whether to exit without comments.
+
+## Delivery
+
+At the end of the review, the tool prompts for a delivery target:
+
+- one of the available tmux panes,
+- no pane, meaning print the review text to stdout.
+
+Tmux pane choices must include:
+
+- tmux pane ID,
+- pane title,
+- session/window/pane location,
+- current command when available.
+
+When a tmux pane is selected, the tool sends the full review message and presses Enter.
+
+When no pane is selected, the same review message is printed to stdout and the process exits.
+
+## Accessibility And Usability
+
+The UI must remain usable in common terminal sizes such as 80x24.
+
+Text must not overlap or become unreadable in narrow terminals.
+
+Line wrapping must be predictable, and wrapped code lines should retain their relationship to the original line number.
+
+Keyboard operations must have visible feedback.
+
+Mouse support must enhance navigation without being required.
+
+## Failure Behavior
+
+The tool must handle:
+
+- missing Git,
+- missing tmux,
+- running outside tmux,
+- no available tmux panes,
+- terminal too small,
+- binary files,
+- deleted files,
+- renamed files,
+- large diffs,
+- unsupported encodings,
+- cancelled prompts,
+- interrupted sessions.
+
+Failures should be reported clearly without tracebacks unless debug mode is enabled.
+
+## Acceptance Criteria
+
+The initial version is complete when:
+
+- `review` starts from a Git repository and prompts for review source,
+- both review sources work,
+- changed files render in a two-pane TUI,
+- file selection and review scrolling stay synchronized,
+- syntax highlighting works for the required file types,
+- keyboard and mouse navigation work,
+- line and multi-line comments can be created and displayed inline,
+- expansion rows reveal hidden context,
+- `:q` exits into delivery target selection,
+- tmux delivery sends the formatted review and Enter,
+- stdout delivery prints the same formatted review,
+- automated tests cover core behavior,
+- manual tmux verification has been run.

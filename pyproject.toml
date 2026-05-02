@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "review"
+version = "0.1.0"
+description = "Terminal code review tool for Git changes and coding-agent feedback"
+readme = "docs/README.md"
+requires-python = ">=3.11"
+authors = [{ name = "review contributors" }]
+dependencies = ["Pygments>=2.17"]
+
+[project.scripts]
+review = "review.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

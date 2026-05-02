@@ -1,0 +1,277 @@
+# Architecture
+
+## Design Principles
+
+The implementation should keep terminal UI code separate from Git parsing, review state, output formatting, and tmux integration.
+
+The most important rule is that behavior must be testable without launching a full terminal UI. The TUI should render and mutate a plain in-memory review model rather than owning the business logic.
+
+## Proposed Package Layout
+
+The exact package layout may change during implementation, but the recommended structure is:
+
+```text
+src/
+  review/
+    __init__.py
+    __main__.py
+    cli.py
+    git.py
+    diff_model.py
+    review_state.py
+    format_review.py
+    tmux.py
+    tui/
+      __init__.py
+      app.py
+      file_pane.py
+      review_pane.py
+      command_mode.py
+      comment_input.py
+      styles.py
+tests/
+  unit/
+  integration/
+  tui/
+  fixtures/
+docs/
+```
+
+## Module Responsibilities
+
+`cli.py` owns command startup, high-level prompts, error handling, and final process exit behavior.
+
+`git.py` owns Git command execution and turns repository state into raw diff data.
+
+`diff_model.py` owns parsing raw diff data into structured files, hunks, line records, and expansion ranges.
+
+`review_state.py` owns the mutable review session state: focused pane, selected file, selected line range, expanded context, and saved comments.
+
+`format_review.py` turns saved comments and referenced context into the final feedback message.
+
+`tmux.py` discovers panes and sends text to a selected pane.
+
+`tui/app.py` owns application composition and global key bindings.
+
+`tui/file_pane.py` renders and handles the modified-file tree.
+
+`tui/review_pane.py` renders the continuous review document and handles scrolling, line selection, expansion, and inline comment anchors.
+
+`tui/command_mode.py` owns `:` command entry and command dispatch.
+
+`tui/comment_input.py` owns inline comment editing.
+
+## Core Data Flow
+
+1. CLI validates repository state.
+2. User selects review source.
+3. Git adapter collects diff information.
+4. Diff parser builds immutable file and line records.
+5. Review state creates an initially visible review document with broad context.
+6. TUI renders file pane and review pane from review state.
+7. User navigates, expands context, and adds comments.
+8. Quit command exits TUI and returns saved comments.
+9. CLI asks for delivery target.
+10. Formatter creates final review message.
+11. Delivery writes to tmux pane or stdout.
+
+## Core Domain Objects
+
+### ReviewSession
+
+Represents one review.
+
+Fields:
+
+- `source`: selected review source.
+- `repository_root`: absolute path to the Git repository.
+- `files`: ordered list of reviewed files.
+- `comments`: list of saved comments.
+- `selection`: current file and line/range selection.
+- `expanded_ranges`: visible context expansions per file.
+
+### ReviewFile
+
+Represents one changed file.
+
+Fields:
+
+- `path`: current file path.
+- `old_path`: previous path for renames.
+- `status`: added, modified, deleted, renamed, copied, binary, mode-changed.
+- `language`: syntax highlighting language.
+- `old_lines`: optional old-side lines.
+- `new_lines`: optional new-side lines.
+- `visible_blocks`: currently visible code blocks and expansion rows.
+
+### ReviewLine
+
+Represents one displayed code line.
+
+Fields:
+
+- `kind`: context, addition, deletion, metadata, expansion, comment.
+- `old_line_number`: old-side line number when applicable.
+- `new_line_number`: new-side line number when applicable.
+- `text`: display text.
+- `highlight_language`: language used for syntax highlighting.
+- `file_path`: owning file.
+- `is_selectable`: whether the user can select it.
+
+### ExpansionRow
+
+Represents hidden context that can be expanded.
+
+Fields:
+
+- `file_path`: owning file.
+- `direction`: above or below.
+- `anchor_line`: nearby visible line.
+- `remaining_count`: hidden line count.
+- `expand_count`: default `20`.
+
+### ReviewComment
+
+Represents a saved user comment.
+
+Fields:
+
+- `id`: stable in-session identifier.
+- `file_path`: file path.
+- `start_line`: first selected new-side line.
+- `end_line`: last selected new-side line.
+- `selected_text`: selected context lines.
+- `body`: comment body.
+- `created_at`: timestamp for deterministic ordering if needed.
+
+Comments should anchor to new-side line numbers for added and context lines. Deleted-line comments need a clear policy because they do not have new-side line numbers. The preferred policy is to allow deleted-line comments and label them as old-side lines in output.
+
+## Diff Representation
+
+The review pane should be a unified, continuous document made of file sections.
+
+Each file section contains:
+
+- file header,
+- optional rename/delete/add metadata,
+- visible blocks of code,
+- expansion rows,
+- inline comment blocks.
+
+The UI should not replace the right pane content when a file is selected. It scrolls within the continuous document.
+
+## Syntax Highlighting Strategy
+
+Use a mature syntax highlighting library rather than implementing lexers manually.
+
+The highlighter must support at least:
+
+- Java,
+- JavaScript,
+- TypeScript,
+- CSS,
+- HTML,
+- JSX,
+- SQL,
+- XML,
+- JSON,
+- properties,
+- YAML.
+
+Language detection should use file extension first, then filename, then fallback to plain text.
+
+Recommended extension mapping:
+
+| Extension | Language |
+| --- | --- |
+| `.java` | Java |
+| `.js`, `.mjs`, `.cjs` | JavaScript |
+| `.ts` | TypeScript |
+| `.tsx` | TSX or JSX-capable TypeScript |
+| `.jsx` | JSX |
+| `.css` | CSS |
+| `.html`, `.htm` | HTML |
+| `.sql` | SQL |
+| `.xml` | XML |
+| `.json` | JSON |
+| `.properties` | Java properties |
+| `.yml`, `.yaml` | YAML |
+
+## State Management
+
+Review state should expose explicit methods for mutations:
+
+- `select_file(path)`
+- `select_line(file_path, line_id)`
+- `move_selection(delta)`
+- `extend_selection(delta)`
+- `expand_context(expansion_id)`
+- `add_comment(range, body)`
+- `delete_comment(comment_id)` if deletion is implemented
+- `visible_file_for_scroll_offset(offset)`
+
+The TUI should call these methods rather than editing lists directly.
+
+## Synchronization Rules
+
+File pane to review pane:
+
+- Selecting a file scrolls the review pane to that file header or first changed line.
+- The selected file becomes highlighted.
+
+Review pane to file pane:
+
+- When the review pane scrolls, compute the file section nearest the top visible code line.
+- Highlight that file in the file pane.
+- If the highlighted file is outside the file pane viewport, scroll the file pane enough to show it.
+
+Sticky file header:
+
+- If a file section extends beyond the current review pane viewport, show the current file name at the top of the review pane while scrolling within that file.
+- The sticky header must update immediately when the next file section reaches the top.
+
+## Error Handling
+
+Internal modules should raise typed exceptions where useful:
+
+- `NotAGitRepository`
+- `NoChangesFound`
+- `GitCommandError`
+- `DiffParseError`
+- `TmuxUnavailable`
+- `TmuxSendError`
+
+The CLI should catch these and render friendly terminal messages.
+
+## Dependency Guidance
+
+The project should prefer stable, maintained Python packages for:
+
+- terminal UI,
+- syntax highlighting,
+- testing.
+
+The implementation should avoid coupling the domain model to a specific TUI library so that the parser, state transitions, formatter, and tmux integration remain unit-testable.
+
+## Performance Targets
+
+The tool should feel responsive for normal review sizes:
+
+- up to 200 changed files,
+- up to 20,000 visible lines after expansion,
+- comments added interactively without noticeable delay.
+
+Large repositories and very large generated files should be handled gracefully by truncation, binary detection, or warnings.
+
+## Future Extension Points
+
+The design should allow later support for:
+
+- additional colon commands,
+- saved review drafts,
+- direct GitHub/GitLab publishing,
+- comment editing and deletion,
+- filtering by file status or path,
+- hiding whitespace-only changes,
+- side-by-side diff mode,
+- custom output templates.
