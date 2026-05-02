@@ -29,58 +29,87 @@ class MenuOption:
     detail: str = ""
 
 
-def select_option(title: str, options: list[MenuOption], *, default_index: int = 0) -> str:
+def select_option(title: str, options: list[MenuOption], *, default_index: int = 0, cancel_requires_double: bool = False) -> str:
     if not options:
         raise ValueError("menu requires at least one option")
     default_index = max(0, min(default_index, len(options) - 1))
     if sys.stdin.isatty() and sys.stdout.isatty():
         try:
-            return _select_option_inline(title, options, default_index, sys.stdin, sys.stdout)
+            return _select_option_inline(title, options, default_index, sys.stdin, sys.stdout, cancel_requires_double)
         except OSError:
             pass
-    return _select_option_text(title, options, default_index)
+    return _select_option_text(title, options, default_index, cancel_requires_double)
 
 
-def _select_option_inline(title: str, options: list[MenuOption], selected: int, input_stream: TextIO, output_stream: TextIO) -> str:
+def _select_option_inline(
+    title: str,
+    options: list[MenuOption],
+    selected: int,
+    input_stream: TextIO,
+    output_stream: TextIO,
+    cancel_requires_double: bool,
+) -> str:
     input_fd = input_stream.fileno()
     old_settings = termios.tcgetattr(input_fd)
     printed_lines = 0
+    cancel_armed = False
     while True:
         try:
             tty.setraw(input_fd)
-            lines = _render_menu_lines(title, options, selected, use_color=True)
+            lines = _render_menu_lines(title, options, selected, use_color=True, cancel_armed=cancel_armed)
             if printed_lines:
                 output_stream.write(f"\x1b[{printed_lines}F")
-            for line in lines:
+            render_count = max(printed_lines, len(lines))
+            for index in range(render_count):
+                line = lines[index] if index < len(lines) else ""
                 output_stream.write("\r\x1b[2K" + line + "\n")
             output_stream.flush()
-            printed_lines = len(lines)
+            printed_lines = render_count
 
             key = _read_key(input_fd)
             if key in {"up", "k", "K"}:
                 selected = max(0, selected - 1)
+                cancel_armed = False
             elif key in {"down", "j", "J"}:
                 selected = min(len(options) - 1, selected + 1)
+                cancel_armed = False
             elif key == "home":
                 selected = 0
+                cancel_armed = False
             elif key == "end":
                 selected = len(options) - 1
+                cancel_armed = False
             elif key == "enter":
                 return options[selected].value
+            elif key == "ctrl_c":
+                if cancel_requires_double and not cancel_armed:
+                    cancel_armed = True
+                else:
+                    raise KeyboardInterrupt
             elif key == "escape":
                 raise KeyboardInterrupt
+            else:
+                cancel_armed = False
         finally:
             termios.tcsetattr(input_fd, termios.TCSADRAIN, old_settings)
 
 
-def _select_option_text(title: str, options: list[MenuOption], default_index: int) -> str:
+def _select_option_text(title: str, options: list[MenuOption], default_index: int, cancel_requires_double: bool) -> str:
     print(f"{title}:")
     for index, option in enumerate(options, start=1):
         default = " (default)" if index - 1 == default_index else ""
         detail = f" - {option.detail}" if option.detail else ""
         print(f"  {index}. {option.label}{detail}{default}")
+    cancel_armed = False
     while True:
-        choice = input(f"Select option [{default_index + 1}]: ").strip()
+        try:
+            choice = input(f"Select option [{default_index + 1}]: ").strip()
+        except KeyboardInterrupt:
+            if cancel_requires_double and not cancel_armed:
+                print("\nPress Ctrl+C again to cancel.")
+                cancel_armed = True
+                continue
+            raise
         if not choice:
             return options[default_index].value
         if choice.isdigit() and 1 <= int(choice) <= len(options):
@@ -89,9 +118,10 @@ def _select_option_text(title: str, options: list[MenuOption], default_index: in
             if choice == option.value or choice == option.label:
                 return option.value
         print("Please select a listed option.")
+        cancel_armed = False
 
 
-def _render_menu_lines(title: str, options: list[MenuOption], selected: int, *, use_color: bool) -> list[str]:
+def _render_menu_lines(title: str, options: list[MenuOption], selected: int, *, use_color: bool, cancel_armed: bool = False) -> list[str]:
     lines = [f"{title}  (Use Up/Down and Enter; Esc cancels)"]
     for index, option in enumerate(options):
         prefix = ">" if index == selected else " "
@@ -101,6 +131,11 @@ def _render_menu_lines(title: str, options: list[MenuOption], selected: int, *, 
         if use_color and index == selected:
             text = f"\x1b[1;34m{text}\x1b[0m"
         lines.append(text)
+    if cancel_armed:
+        warning = "Press Ctrl+C again to cancel."
+        if use_color:
+            warning = f"\x1b[1;33m{warning}\x1b[0m"
+        lines.append(warning)
     return lines
 
 
@@ -120,6 +155,8 @@ def _read_key(input_fd: int) -> str:
 def _decode_key(sequence: bytes) -> str:
     if sequence in {b"\r", b"\n"}:
         return "enter"
+    if sequence == b"\x03":
+        return "ctrl_c"
     if sequence == b"\x1b":
         return "escape"
     return KEY_SEQUENCES.get(sequence, sequence.decode(errors="ignore"))

@@ -87,6 +87,16 @@ def list_branches(root: Path) -> list[str]:
     return sorted(branches)
 
 
+def current_branch(root: Path) -> str:
+    branch = run_git(root, ["branch", "--show-current"], check=False)
+    if branch.returncode == 0 and branch.stdout.strip():
+        return branch.stdout.strip()
+    commit = run_git(root, ["rev-parse", "--short", "HEAD"], check=False)
+    if commit.returncode == 0 and commit.stdout.strip():
+        return f"detached:{commit.stdout.strip()}"
+    return "unknown"
+
+
 def collect_uncommitted(root: Path) -> tuple[ReviewSource, list[ReviewFile]]:
     base = "HEAD" if has_head(root) else EMPTY_TREE
     staged_entries = _name_status(root, ["--cached", base, "--"])

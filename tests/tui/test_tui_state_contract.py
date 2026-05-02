@@ -73,6 +73,38 @@ class TuiStateContractTests(unittest.TestCase):
         app._handle_command_key(10)
         self.assertTrue(app.quit_requested)
 
+    def test_file_pane_is_hidden_by_default(self):
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [])
+        app = ReviewApp(state)
+
+        self.assertFalse(app.file_pane_visible)
+        self.assertEqual(app.focus, "review")
+
+    def test_ctrl_c_requires_double_press_in_tui(self):
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [])
+        app = ReviewApp(state)
+
+        app._handle_key("\x03")
+
+        self.assertFalse(app.quit_requested)
+        self.assertTrue(app.interrupt_armed)
+        self.assertEqual(app._status_line()[0], tui_app.INTERRUPT_CONFIRMATION_MESSAGE)
+
+        app._handle_key("\x03")
+
+        self.assertTrue(app.quit_requested)
+
+    def test_ctrl_c_confirmation_resets_after_other_key(self):
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [])
+        app = ReviewApp(state)
+
+        app._handle_key("\x03")
+        app._handle_key("z")
+        app._handle_key("\x03")
+
+        self.assertFalse(app.quit_requested)
+        self.assertTrue(app.interrupt_armed)
+
     def test_comment_title_includes_referenced_range(self):
         file = create_review_file("src/app.js", "modified", ["a", "b"], ["A", "B"])
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
@@ -350,14 +382,13 @@ class TuiStateContractTests(unittest.TestCase):
         file = create_review_file("src/app.py", "modified", ["a"], ["b"])
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
         app = ReviewApp(state)
-        app.focus = "file"
+
+        app._handle_key("T")
+        self.assertTrue(app.file_pane_visible)
 
         app._handle_key("T")
         self.assertFalse(app.file_pane_visible)
         self.assertEqual(app.focus, "review")
-
-        app._handle_key("T")
-        self.assertTrue(app.file_pane_visible)
 
     def test_range_selection_draws_visible_rail_on_each_selected_line(self):
         class FakeScreen:

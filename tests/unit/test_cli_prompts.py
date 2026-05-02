@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from review import cli
+from review.diff_model import ReviewSource, create_review_file
 from review.tmux import TmuxPane
 from review.tui.menu import MenuOption, _decode_key, _read_key, _render_menu_lines
 
@@ -18,6 +19,7 @@ class CliPromptTests(unittest.TestCase):
         self.assertEqual(title, "Review source")
         self.assertEqual([option.value for option in options], ["uncommitted", "branch"])
         self.assertIn("PR-style", options[1].label)
+        self.assertFalse(select_option.call_args.kwargs.get("cancel_requires_double", False))
 
     def test_prompt_branch_uses_selectable_branch_menu(self):
         with (
@@ -29,6 +31,7 @@ class CliPromptTests(unittest.TestCase):
         title, options = select_option.call_args.args
         self.assertEqual(title, "Target branch")
         self.assertEqual([option.value for option in options], ["main", "develop"])
+        self.assertTrue(select_option.call_args.kwargs["cancel_requires_double"])
 
     def test_deliver_review_uses_selectable_tmux_menu(self):
         pane = TmuxPane("%1", "s", "0", "1", "agent", "bash")
@@ -43,6 +46,7 @@ class CliPromptTests(unittest.TestCase):
         title, options = select_option.call_args.args
         self.assertEqual(title, "Delivery target")
         self.assertEqual([option.value for option in options], ["stdout", "%1"])
+        self.assertTrue(select_option.call_args.kwargs["cancel_requires_double"])
         send_text.assert_called_once_with("%1", "review text\n")
         self.assertIn("Sent review to tmux pane %1.", stdout.getvalue())
 
@@ -78,6 +82,36 @@ class CliPromptTests(unittest.TestCase):
         self.assertEqual(_decode_key(b"\x1bOB"), "down")
         self.assertEqual(_decode_key(b"\x1b[A"), "up")
         self.assertEqual(_decode_key(b"\x1b"), "escape")
+        self.assertEqual(_decode_key(b"\x03"), "ctrl_c")
+
+    def test_main_archives_non_empty_review_before_stdout_delivery(self):
+        file = create_review_file("app.py", "modified", ["old"], ["new"])
+
+        class TtyStringIO(io.StringIO):
+            def isatty(self):
+                return True
+
+        class FakeReviewApp:
+            def __init__(self, state):
+                self.state = state
+
+            def run(self):
+                self.state.add_comment("Needs work.")
+                return self.state
+
+        stdout = TtyStringIO()
+        with (
+            mock.patch.object(cli, "repository_root", return_value=Path("/repo")),
+            mock.patch.object(cli, "collect_uncommitted", return_value=(ReviewSource("uncommitted"), [file])),
+            mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
+            mock.patch.object(cli.sys, "stdout", stdout),
+            mock.patch.object(cli, "ReviewApp", FakeReviewApp),
+            mock.patch.object(cli, "archive_review") as archive_review,
+        ):
+            self.assertEqual(cli.main(["--source", "uncommitted", "--stdout"]), 0)
+
+        archive_review.assert_called_once()
+        self.assertIn("Needs work.", stdout.getvalue())
 
     def test_menu_read_key_waits_for_complete_application_arrow_sequence(self):
         read_fd, write_fd = os.pipe()

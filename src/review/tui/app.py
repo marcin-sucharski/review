@@ -16,6 +16,7 @@ CommandHandler = Callable[[], None]
 GUTTER_WIDTH = 8
 INITIAL_STATUS_MESSAGE = "Tab switches panes. T toggles files. z centers code. :q quits."
 NO_SELECTED_COMMENT_MESSAGE = "No comment is attached to the selected line."
+INTERRUPT_CONFIRMATION_MESSAGE = "Press Ctrl+C again to quit review."
 MOUSE_SCROLL_LINES = 3
 SHIFT_UP_KEYS = {getattr(curses, "KEY_SR", -1000), getattr(curses, "KEY_SUP", -1001)}
 SHIFT_DOWN_KEYS = {getattr(curses, "KEY_SF", -1002), getattr(curses, "KEY_SDOWN", -1003)}
@@ -88,7 +89,7 @@ class DrawFrame:
 class ReviewApp:
     def __init__(self, state: ReviewState):
         self.state = state
-        self.focus: Focus = "file"
+        self.focus: Focus = "review"
         self.file_scroll = 0
         self.review_scroll = 0
         self.command_mode = False
@@ -98,7 +99,8 @@ class ReviewApp:
         self.editing_comment_id: str | None = None
         self.status_message = INITIAL_STATUS_MESSAGE
         self.quit_requested = False
-        self.file_pane_visible = True
+        self.file_pane_visible = False
+        self.interrupt_armed = False
         self.mouse_drag_anchor: tuple[str, int] | None = None
         self.screen_map: dict[int, int] = {}
         self.left_width = 32
@@ -120,6 +122,10 @@ class ReviewApp:
             curses.use_default_colors()
         try:
             curses.nonl()
+        except curses.error:
+            pass
+        try:
+            curses.raw()
         except curses.error:
             pass
         curses.set_escdelay(25)
@@ -219,7 +225,7 @@ class ReviewApp:
         active_index = self.state.active_document_index()
         self._ensure_selected_visible(items, active_index)
         if self.focus == "review":
-            self.state.update_file_highlight_for_document_index(self.review_scroll)
+            self.state.update_file_highlight_for_document_index(active_index if active_index is not None else self.review_scroll)
         frame = self._draw_frame(active_index)
         sticky = self._sticky_header(items)
         attr = curses.A_BOLD | (curses.A_REVERSE if self.focus == "review" else self._style("header"))
@@ -427,6 +433,8 @@ class ReviewApp:
         self._safe_addnstr(stdscr, y, 0, text.ljust(width), width - 1, attr)
 
     def _status_line(self) -> tuple[str, int]:
+        if self.interrupt_armed:
+            return INTERRUPT_CONFIRMATION_MESSAGE, curses.A_REVERSE
         if self.command_mode:
             return ":" + self.command_buffer, curses.A_REVERSE
         if self.comment_mode:
@@ -435,6 +443,10 @@ class ReviewApp:
         return self.status_message, self._style("muted")
 
     def _handle_key(self, key: int | str) -> None:
+        if _is_ctrl_c(key):
+            self._handle_interrupt()
+            return
+        self.interrupt_armed = False
         if self.comment_mode:
             self._handle_comment_key(key)
             return
@@ -448,6 +460,12 @@ class ReviewApp:
             self._handle_file_key(key)
         else:
             self._handle_review_key(key)
+
+    def _handle_interrupt(self) -> None:
+        if self.interrupt_armed:
+            self.quit_requested = True
+            return
+        self.interrupt_armed = True
 
     def _handle_global_key(self, key: int | str) -> bool:
         if key in (9, "\t"):
@@ -939,6 +957,10 @@ def _is_enter(key: int | str) -> bool:
 
 def _is_comment_newline(key: int | str) -> bool:
     return key in (10, "\n", "\x0a", 14, "\x0e")
+
+
+def _is_ctrl_c(key: int | str) -> bool:
+    return key in (3, "\x03")
 
 
 def _is_backspace(key: int | str) -> bool:

@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .archive import archive_review
 from .errors import GitCommandError, NoChangesFound, NotAGitRepository, ReviewError, TmuxSendError, TmuxUnavailable
 from .format_review import format_review
 from .git import collect_branch_comparison, collect_uncommitted, default_branch_candidates, repository_root
@@ -47,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
             ReviewApp(state).run()
 
         message = format_review(state)
+        if state.comments:
+            archive_review(state, message)
         if args.stdout:
             sys.stdout.write(message)
             return 0
@@ -83,7 +86,7 @@ def prompt_branch(root: Path) -> str:
     branches = default_branch_candidates(root)
     if not branches:
         raise ReviewError("no branches are available for comparison")
-    return select_option("Target branch", [MenuOption(branch, branch) for branch in branches])
+    return select_option("Target branch", [MenuOption(branch, branch) for branch in branches], cancel_requires_double=True)
 
 
 def deliver_review(message: str) -> int:
@@ -96,7 +99,7 @@ def deliver_review(message: str) -> int:
 
     options = [MenuOption("No tmux pane", "stdout", "print review to stdout")]
     options.extend(MenuOption(pane.display(), pane.pane_id) for pane in panes)
-    choice = select_option("Delivery target", options)
+    choice = select_option("Delivery target", options, cancel_requires_double=True)
     if choice == "stdout":
         print(message, end="")
         return 0
