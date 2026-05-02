@@ -121,6 +121,46 @@ class TuiStateContractTests(unittest.TestCase):
 
         self.assertEqual(state.comments[0].body, "A\nB")
 
+    def test_comment_input_trailing_newline_draws_blank_line_immediately(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+
+            def addnstr(self, y, x, text, n, attr):
+                self.calls.append((y, x, text[:n]))
+
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [])
+        app = ReviewApp(state)
+        app.content_height = 20
+        screen = FakeScreen()
+
+        used = app._draw_comment(screen, 0, 0, 80, "alpha\n", saved=False)
+
+        rails = [(y, text) for y, x, text in screen.calls if x == 5 and text == "|"]
+        self.assertEqual(used, 2)
+        self.assertEqual(rails, [(0, "|"), (1, "|")])
+
+    def test_comment_mode_draw_uses_cached_selection_snapshot(self):
+        class FakeScreen:
+            def addnstr(self, y, x, text, n, attr):
+                return None
+
+        old = [f"line {index}" for index in range(40)]
+        new = old.copy()
+        new[10] = "changed"
+        file = create_review_file("src/app.py", "modified", old, new)
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        state.extend_selection(1)
+        app = ReviewApp(state)
+        app.focus = "review"
+        app.comment_mode = True
+        app.comment_buffer = "one\ntwo"
+        app.content_height = 20
+        app.left_width = 24
+
+        with mock.patch.object(state, "is_row_in_selection", side_effect=AssertionError("selection should be cached")):
+            app._draw_review_pane(FakeScreen(), 20, 100)
+
     def test_selected_comment_enter_edits_and_delete_removes(self):
         file = create_review_file("src/app.js", "modified", ["a"], ["A"])
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])

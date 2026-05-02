@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import curses
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 
 from ..diff_model import ReviewComment, ReviewLine
@@ -67,6 +68,23 @@ FOREGROUND_DEFAULT = {
 }
 
 
+@dataclass(frozen=True)
+class DrawFrame:
+    active_index: int | None
+    selected_file_path: str | None
+    selected_rows: frozenset[int]
+    comment_input_row: int | None
+    comment_ranges: dict[str, tuple[tuple[int, int], ...]]
+
+    def is_selected_row(self, file_path: str, row_index: int | None) -> bool:
+        return row_index is not None and file_path == self.selected_file_path and row_index in self.selected_rows
+
+    def has_comment_range(self, file_path: str, row_index: int | None) -> bool:
+        if row_index is None:
+            return False
+        return any(start <= row_index <= end for start, end in self.comment_ranges.get(file_path, ()))
+
+
 class ReviewApp:
     def __init__(self, state: ReviewState):
         self.state = state
@@ -88,6 +106,8 @@ class ReviewApp:
         self._color_pairs: dict[tuple[int, int], int] = {}
         self._next_color_pair = 1
         self.command_handlers = self._build_command_handlers()
+        self._file_tree_cache_key: tuple[tuple[str, str | None, str], ...] | None = None
+        self._file_tree_cache: list[FileTreeRow] = []
 
     def run(self) -> ReviewState:
         curses.wrapper(self._main)
@@ -146,7 +166,8 @@ class ReviewApp:
         attr = curses.A_BOLD | (curses.A_REVERSE if self.focus == "file" else self._style("header"))
         self._safe_addnstr(stdscr, 0, 0, title.ljust(self.left_width), self.left_width, attr)
         visible_height = self.content_height - 1
-        rows = build_file_tree(self.state.files)
+        rows = self._file_tree_rows()
+        comment_counts = self._comment_counts_by_file()
         selected_row = file_tree_row_index(rows, self.state.file_pane_index) if rows else 0
         self.file_scroll = max(0, min(self.file_scroll, max(0, len(rows) - visible_height)))
         if selected_row < self.file_scroll:
@@ -155,7 +176,7 @@ class ReviewApp:
             self.file_scroll = selected_row - visible_height + 1
         for screen_row, row_index in enumerate(range(self.file_scroll, min(len(rows), self.file_scroll + visible_height)), start=1):
             row = rows[row_index]
-            text = self._file_tree_text(row)
+            text = self._file_tree_text(row, comment_counts)
             selected = row.kind == "file" and row.file_index == self.state.file_pane_index
             row_attr = curses.A_REVERSE if selected else curses.A_NORMAL
             if self.focus == "file" and selected:
@@ -164,14 +185,27 @@ class ReviewApp:
                 row_attr |= curses.A_BOLD | self._style("muted")
             self._safe_addnstr(stdscr, screen_row, 0, text.ljust(self.left_width), self.left_width, row_attr)
 
-    def _file_tree_text(self, row: FileTreeRow) -> str:
+    def _file_tree_rows(self) -> list[FileTreeRow]:
+        cache_key = tuple((file.path, file.old_path, file.status) for file in self.state.files)
+        if cache_key != self._file_tree_cache_key:
+            self._file_tree_cache_key = cache_key
+            self._file_tree_cache = build_file_tree(self.state.files)
+        return self._file_tree_cache
+
+    def _comment_counts_by_file(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for comment in self.state.comments:
+            counts[comment.file_path] = counts.get(comment.file_path, 0) + 1
+        return counts
+
+    def _file_tree_text(self, row: FileTreeRow, comment_counts: dict[str, int] | None = None) -> str:
         indent = "  " * row.depth
         if row.kind == "directory":
             return f" {indent}{row.label}"
         if row.file_index is None:
             return ""
         file = self.state.files[row.file_index]
-        comments = len(self.state.comments_for_file(file.path))
+        comments = (comment_counts or {}).get(file.path, 0)
         comment_text = f" [{comments}]" if comments else ""
         return f" {indent}{file.status_marker()} {row.label}{comment_text}"
 
@@ -182,9 +216,11 @@ class ReviewApp:
         if not items:
             self._safe_addnstr(stdscr, 0, right_x, " No changes ", right_width - 1, curses.A_BOLD)
             return
-        self._ensure_selected_visible()
+        active_index = self.state.active_document_index()
+        self._ensure_selected_visible(items, active_index)
         if self.focus == "review":
             self.state.update_file_highlight_for_document_index(self.review_scroll)
+        frame = self._draw_frame(active_index)
         sticky = self._sticky_header(items)
         attr = curses.A_BOLD | (curses.A_REVERSE if self.focus == "review" else self._style("header"))
         self._safe_addnstr(stdscr, 0, right_x, f" {sticky} ".ljust(right_width), right_width - 1, attr)
@@ -192,14 +228,35 @@ class ReviewApp:
         self.screen_map = {}
         y = 1
         index = self.review_scroll
-        active_index = self.state.active_document_index()
         while y < self.content_height and index < len(items):
             item = items[index]
-            used = self._draw_review_item(stdscr, y, right_x, right_width, item, index, index == active_index)
+            used = self._draw_review_item(stdscr, y, right_x, right_width, item, index, index == frame.active_index, frame)
             for screen_y in range(y, min(self.content_height, y + used)):
                 self.screen_map[screen_y] = index
             y += max(1, used)
             index += 1
+
+    def _draw_frame(self, active_index: int | None = None) -> DrawFrame:
+        selected_file_path = None
+        selected_rows: frozenset[int] = frozenset()
+        selected = self.state.selected_visible_rows()
+        if selected is not None:
+            selected_file_path, rows = selected
+            selected_rows = frozenset(rows)
+        comment_input_row = max(selected_rows) if selected_rows else None
+        return DrawFrame(
+            active_index=self.state.active_document_index() if active_index is None else active_index,
+            selected_file_path=selected_file_path,
+            selected_rows=selected_rows,
+            comment_input_row=comment_input_row,
+            comment_ranges=self._comment_ranges_by_file(),
+        )
+
+    def _comment_ranges_by_file(self) -> dict[str, tuple[tuple[int, int], ...]]:
+        ranges: dict[str, list[tuple[int, int]]] = {}
+        for comment in self.state.comments:
+            ranges.setdefault(comment.file_path, []).append(comment.sorted_rows)
+        return {path: tuple(path_ranges) for path, path_ranges in ranges.items()}
 
     def _draw_review_item(
         self,
@@ -210,7 +267,10 @@ class ReviewApp:
         item: DocumentItem,
         document_index: int,
         selected: bool,
+        frame: DrawFrame | None = None,
     ) -> int:
+        if frame is None:
+            frame = self._draw_frame()
         if item.kind == "file_header":
             attr = curses.A_BOLD | self._style("header")
             return self._draw_full_width_row(stdscr, y, x, width, f" {item.text} ", attr)
@@ -222,35 +282,43 @@ class ReviewApp:
         if item.kind == "comment" and item.comment is not None:
             return self._draw_comment(stdscr, y, x, width, item.comment.body, saved=True, selected=selected)
         if item.kind == "code" and item.line is not None and item.row_index is not None:
-            return self._draw_code_item(stdscr, y, x, width, item, selected)
+            return self._draw_code_item(stdscr, y, x, width, item, selected, frame)
         return 1
 
     def _draw_full_width_row(self, stdscr, y: int, x: int, width: int, text: str, attr: int) -> int:
         self._safe_addnstr(stdscr, y, x, text.ljust(width), width - 1, attr)
         return 1
 
-    def _draw_code_item(self, stdscr, y: int, x: int, width: int, item: DocumentItem, selected: bool) -> int:
-        used = self._draw_code_line(stdscr, y, x, width, item, selected)
-        if self._should_draw_comment_input(item):
+    def _draw_code_item(self, stdscr, y: int, x: int, width: int, item: DocumentItem, selected: bool, frame: DrawFrame) -> int:
+        used = self._draw_code_line(stdscr, y, x, width, item, selected, frame)
+        if self._should_draw_comment_input(item, frame):
             used += self._draw_comment(stdscr, y + used, x, width, self.comment_buffer or " ", saved=False)
         return used
 
-    def _should_draw_comment_input(self, item: DocumentItem) -> bool:
+    def _should_draw_comment_input(self, item: DocumentItem, frame: DrawFrame) -> bool:
         if not self.comment_mode or item.row_index is None:
             return False
-        if not self.state.is_row_in_selection(item.file_path, item.row_index):
-            return False
-        selected_range = self.state.selected_range()
-        return selected_range is not None and item.row_index == selected_range[1]
+        return item.file_path == frame.selected_file_path and item.row_index == frame.comment_input_row
 
-    def _draw_code_line(self, stdscr, y: int, x: int, width: int, item: DocumentItem, selected: bool) -> int:
+    def _draw_code_line(
+        self,
+        stdscr,
+        y: int,
+        x: int,
+        width: int,
+        item: DocumentItem,
+        selected: bool,
+        frame: DrawFrame | None = None,
+    ) -> int:
+        if frame is None:
+            frame = self._draw_frame()
         line = item.line
         assert line is not None
         number = line.primary_line
         body_width = _body_width(width)
         chunks = _wrap_text_segments(line.text, body_width)
-        selected_range = item.row_index is not None and self.state.is_row_in_selection(item.file_path, item.row_index)
-        range_rail = selected_range or self._row_has_comment_range(item.file_path, item.row_index)
+        selected_range = frame.is_selected_row(item.file_path, item.row_index)
+        range_rail = selected_range or frame.has_comment_range(item.file_path, item.row_index)
         background = self._line_background(line, selected or selected_range)
         modifiers = self._code_line_modifiers(item, selected, selected_range)
         file = self.state.file_by_path(item.file_path)
@@ -305,7 +373,7 @@ class ReviewApp:
         self._safe_addnstr(stdscr, y, x + 6, marker + " ", 2, self._style("line-number", background, modifiers))
 
     def _draw_comment(self, stdscr, y: int, x: int, width: int, text: str, *, saved: bool, selected: bool = False) -> int:
-        lines = text.splitlines() or [" "]
+        lines = _comment_display_lines(text)
         modifiers = curses.A_UNDERLINE if selected else curses.A_NORMAL
         attr = self._style("warning", "selection" if selected else None, modifiers) | (curses.A_BOLD if not saved else curses.A_NORMAL)
         used = 0
@@ -577,7 +645,7 @@ class ReviewApp:
             self.status_message = "Files pane shown. Press T to hide it."
 
     def _move_file_tree_selection(self, delta: int) -> int:
-        rows = build_file_tree(self.state.files)
+        rows = self._file_tree_rows()
         file_rows = [row_index for row_index, row in enumerate(rows) if row.kind == "file" and row.file_index is not None]
         if not file_rows:
             return 0
@@ -665,7 +733,7 @@ class ReviewApp:
             self.review_scroll = self.state.select_file(self.state.files[row.file_index].path)
 
     def _file_tree_row_at(self, y: int) -> FileTreeRow | None:
-        rows = build_file_tree(self.state.files)
+        rows = self._file_tree_rows()
         row_index = self.file_scroll + y - 1
         if 0 <= row_index < len(rows):
             return rows[row_index]
@@ -706,9 +774,11 @@ class ReviewApp:
     def _clear_mouse_drag(self) -> None:
         self.mouse_drag_anchor = None
 
-    def _ensure_selected_visible(self) -> None:
-        active = self.state.active_document_index()
-        items = self.state.document_items()
+    def _ensure_selected_visible(self, items: list[DocumentItem] | None = None, active: int | None = None) -> None:
+        if active is None:
+            active = self.state.active_document_index()
+        if items is None:
+            items = self.state.document_items()
         viewport = self._review_viewport_height()
         max_scroll = max(0, len(items) - viewport)
         if active is None:
@@ -758,15 +828,6 @@ class ReviewApp:
 
     def _review_viewport_height(self) -> int:
         return max(1, self.content_height - 1)
-
-    def _row_has_comment_range(self, file_path: str, row_index: int | None) -> bool:
-        if row_index is None:
-            return False
-        for comment in self.state.comments_for_file(file_path):
-            start, end = comment.sorted_rows
-            if start <= row_index <= end:
-                return True
-        return False
 
     @staticmethod
     def _line_background(line: ReviewLine | None, selected: bool) -> str | None:
@@ -904,6 +965,12 @@ def _line_number_text(number: int | None, visual_offset: int) -> str:
 
 def _wrap_text(text: str, width: int) -> list[str]:
     return [chunk for chunk, _ in _wrap_text_segments(text, width)]
+
+
+def _comment_display_lines(text: str) -> list[str]:
+    if text == "":
+        return [" "]
+    return text.split("\n")
 
 
 def _wrap_text_segments(text: str, width: int) -> list[tuple[str, int]]:

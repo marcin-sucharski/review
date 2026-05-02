@@ -426,11 +426,23 @@ class ReviewState:
     def is_row_in_selection(self, file_path: str, row_index: int) -> bool:
         if file_path != self.selected_file_path:
             return False
-        selected = self.selected_range()
+        selected = self.selected_visible_rows()
         if selected is None:
             return False
-        file = self.file_by_path(file_path)
-        return row_index in self._contiguous_visible_selection_rows(file, selected[0], selected[1])
+        _, rows = selected
+        return row_index in rows
+
+    def selected_visible_rows(self) -> tuple[str, tuple[int, ...]] | None:
+        if self.selected_file_path is None:
+            return None
+        selected = self.selected_range()
+        if selected is None:
+            return None
+        file = self.file_by_path(self.selected_file_path)
+        rows = self._contiguous_visible_selection_rows(file, selected[0], selected[1])
+        if not rows:
+            return None
+        return self.selected_file_path, tuple(rows)
 
     def add_comment(self, body: str) -> ReviewComment | None:
         if self.selected_file_path is None:
@@ -584,7 +596,8 @@ class ReviewState:
         if not items:
             return None
         index = max(0, min(index, len(items) - 1))
-        for item in reversed(items[: index + 1]):
+        for item_index in range(index, -1, -1):
+            item = items[item_index]
             if item.file_path:
                 return item.file_path
         return items[index].file_path
