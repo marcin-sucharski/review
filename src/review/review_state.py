@@ -73,23 +73,10 @@ class ReviewState:
         for index, file in enumerate(self.files):
             first = file.first_visible_row()
             if first is not None:
-                self.selection_kind = "code"
-                self.file_pane_index = index
-                self.selected_file_path = file.path
-                self.selected_row = first
-                self.anchor_row = first
-                self.active_row = first
-                self.selected_expansion_id = None
-                self.selected_comment_id = None
+                self._select_code(index, file.path, first)
                 return
         if self.files:
-            self.selected_file_path = self.files[0].path
-            self.file_pane_index = 0
-            self.selected_row = None
-            self.anchor_row = None
-            self.active_row = None
-            self.selected_expansion_id = None
-            self.selected_comment_id = None
+            self._select_metadata(0, self.files[0].path)
 
     def file_by_path(self, path: str) -> ReviewFile:
         for file in self.files:
@@ -115,99 +102,108 @@ class ReviewState:
         if cache_key == self._document_cache_key:
             return self._document_cache
 
-        comments_by_file: dict[str, list[ReviewComment]] = {}
-        for comment in sorted(self.comments, key=lambda comment: (comment.file_path, comment.sorted_rows, comment.order)):
-            comments_by_file.setdefault(comment.file_path, []).append(comment)
-
+        comments_by_file = self._comments_by_file()
         items: list[DocumentItem] = []
         for file_index, file in enumerate(self.files):
-            file_comments = comments_by_file.get(file.path, [])
-            comment_count = len(file_comments)
-            suffix = f" ({comment_count} comments)" if comment_count else ""
-            items.append(
-                DocumentItem(
-                    kind="file_header",
-                    file_index=file_index,
-                    file_path=file.path,
-                    text=f"{file.status_marker()} {file.display_path}{suffix}",
-                )
-            )
-            for metadata in file.metadata:
-                items.append(
-                    DocumentItem(
-                        kind="metadata",
-                        file_index=file_index,
-                        file_path=file.path,
-                        text=metadata,
-                    )
-                )
-            if file.binary:
-                items.append(
-                    DocumentItem(
-                        kind="metadata",
-                        file_index=file_index,
-                        file_path=file.path,
-                        text=f"Binary file changed: {file.display_path}",
-                    )
-                )
-                continue
-            intervals = sorted(file.visible_intervals, key=lambda interval: interval.start)
-            previous_end = -1
-            for interval_index, interval in enumerate(intervals):
-                if interval.start > previous_end + 1:
-                    items.append(
-                        DocumentItem(
-                            kind="expansion",
-                            file_index=file_index,
-                            file_path=file.path,
-                            expansion=self._expansion_for_gap(
-                                file.path,
-                                "above" if interval_index == 0 else "below",
-                                previous_end + 1,
-                                interval.start - 1,
-                            ),
-                        )
-                    )
-                for row_index in range(interval.start, interval.end + 1):
-                    line = file.lines[row_index]
-                    items.append(
-                        DocumentItem(
-                            kind="code",
-                            file_index=file_index,
-                            file_path=file.path,
-                            row_index=row_index,
-                            line=line,
-                        )
-                    )
-                    for comment in file_comments:
-                        if comment.sorted_rows[1] == row_index:
-                            items.append(
-                                DocumentItem(
-                                    kind="comment",
-                                    file_index=file_index,
-                                    file_path=file.path,
-                                    comment=comment,
-                                    text=comment.body,
-                                )
-                            )
-                previous_end = interval.end
-            if file.lines and previous_end < len(file.lines) - 1:
-                items.append(
-                    DocumentItem(
-                        kind="expansion",
-                        file_index=file_index,
-                        file_path=file.path,
-                        expansion=self._expansion_for_gap(
-                            file.path,
-                            "below",
-                            previous_end + 1,
-                            len(file.lines) - 1,
-                        ),
-                    )
-                )
+            items.extend(self._document_items_for_file(file_index, file, comments_by_file.get(file.path, [])))
         self._document_cache_key = cache_key
         self._document_cache = items
         return items
+
+    def _comments_by_file(self) -> dict[str, list[ReviewComment]]:
+        comments_by_file: dict[str, list[ReviewComment]] = {}
+        comments = sorted(self.comments, key=lambda comment: (comment.file_path, comment.sorted_rows, comment.order))
+        for comment in comments:
+            comments_by_file.setdefault(comment.file_path, []).append(comment)
+        return comments_by_file
+
+    def _document_items_for_file(
+        self,
+        file_index: int,
+        file: ReviewFile,
+        file_comments: list[ReviewComment],
+    ) -> list[DocumentItem]:
+        items = [
+            self._file_header_item(file_index, file, len(file_comments)),
+            *self._metadata_items(file_index, file),
+        ]
+        if file.binary:
+            items.append(self._metadata_item(file_index, file, f"Binary file changed: {file.display_path}"))
+            return items
+        items.extend(self._visible_file_items(file_index, file, file_comments))
+        return items
+
+    def _file_header_item(self, file_index: int, file: ReviewFile, comment_count: int) -> DocumentItem:
+        suffix = f" ({comment_count} comments)" if comment_count else ""
+        return self._item(
+            "file_header",
+            file_index,
+            file,
+            text=f"{file.status_marker()} {file.display_path}{suffix}",
+        )
+
+    def _metadata_items(self, file_index: int, file: ReviewFile) -> list[DocumentItem]:
+        return [self._metadata_item(file_index, file, metadata) for metadata in file.metadata]
+
+    def _metadata_item(self, file_index: int, file: ReviewFile, text: str) -> DocumentItem:
+        return self._item("metadata", file_index, file, text=text)
+
+    def _visible_file_items(
+        self,
+        file_index: int,
+        file: ReviewFile,
+        file_comments: list[ReviewComment],
+    ) -> list[DocumentItem]:
+        items: list[DocumentItem] = []
+        comments_by_end_row = self._comments_by_end_row(file_comments)
+        intervals = sorted(file.visible_intervals, key=lambda interval: interval.start)
+        previous_end = -1
+        for interval_index, interval in enumerate(intervals):
+            if interval.start > previous_end + 1:
+                direction = "above" if interval_index == 0 else "below"
+                items.append(self._expansion_item(file_index, file, direction, previous_end + 1, interval.start - 1))
+            items.extend(self._visible_interval_items(file_index, file, interval.start, interval.end, comments_by_end_row))
+            previous_end = interval.end
+        if file.lines and previous_end < len(file.lines) - 1:
+            items.append(self._expansion_item(file_index, file, "below", previous_end + 1, len(file.lines) - 1))
+        return items
+
+    @staticmethod
+    def _comments_by_end_row(file_comments: list[ReviewComment]) -> dict[int, list[ReviewComment]]:
+        comments_by_end_row: dict[int, list[ReviewComment]] = {}
+        for comment in file_comments:
+            comments_by_end_row.setdefault(comment.sorted_rows[1], []).append(comment)
+        return comments_by_end_row
+
+    def _visible_interval_items(
+        self,
+        file_index: int,
+        file: ReviewFile,
+        start: int,
+        end: int,
+        comments_by_end_row: dict[int, list[ReviewComment]],
+    ) -> list[DocumentItem]:
+        items: list[DocumentItem] = []
+        for row_index in range(start, end + 1):
+            items.append(self._item("code", file_index, file, row_index=row_index, line=file.lines[row_index]))
+            for comment in comments_by_end_row.get(row_index, []):
+                items.append(self._item("comment", file_index, file, comment=comment, text=comment.body))
+        return items
+
+    def _expansion_item(
+        self,
+        file_index: int,
+        file: ReviewFile,
+        direction: str,
+        gap_start: int,
+        gap_end: int,
+    ) -> DocumentItem:
+        expansion = self._expansion_for_gap(file.path, direction, gap_start, gap_end)
+        return self._item("expansion", file_index, file, expansion=expansion)
+
+    @staticmethod
+    def _item(kind: str, file_index: int, file: ReviewFile, **kwargs) -> DocumentItem:
+        return DocumentItem(kind=kind, file_index=file_index, file_path=file.path, **kwargs)
 
     def _ensure_default_visibility(self) -> None:
         changed = False
@@ -286,6 +282,49 @@ class ReviewState:
             return item.kind == "comment" and item.comment is not None and item.comment.id == self.selected_comment_id
         return False
 
+    def _select_file_context(self, file_index: int, file_path: str) -> None:
+        self.file_pane_index = file_index
+        self.selected_file_path = file_path
+
+    def _clear_row_selection(self) -> None:
+        self.selected_row = None
+        self.anchor_row = None
+        self.active_row = None
+
+    def _clear_item_selection(self) -> None:
+        self.selected_expansion_id = None
+        self.selected_comment_id = None
+
+    def _select_code(self, file_index: int, file_path: str, active_row: int, *, anchor_row: int | None = None) -> None:
+        self.selection_kind = "code"
+        self._select_file_context(file_index, file_path)
+        self.selected_row = active_row
+        self.anchor_row = active_row if anchor_row is None else anchor_row
+        self.active_row = active_row
+        self._clear_item_selection()
+
+    def _select_metadata(self, file_index: int, file_path: str) -> None:
+        self.selection_kind = "metadata"
+        self._select_file_context(file_index, file_path)
+        self._clear_item_selection()
+        self._clear_row_selection()
+
+    def _select_expansion(self, file_index: int, file_path: str, expansion_id: str) -> None:
+        self.selection_kind = "expansion"
+        self._select_file_context(file_index, file_path)
+        self.selected_expansion_id = expansion_id
+        self.selected_comment_id = None
+        self._clear_row_selection()
+
+    def _select_comment(self, file_index: int, file_path: str, comment: ReviewComment) -> None:
+        self.selection_kind = "comment"
+        self._select_file_context(file_index, file_path)
+        self.selected_comment_id = comment.id
+        self.selected_row = comment.sorted_rows[1]
+        self.anchor_row = None
+        self.active_row = None
+        self.selected_expansion_id = None
+
     def select_document_index(self, index: int) -> None:
         items = self.document_items()
         if not items:
@@ -293,61 +332,22 @@ class ReviewState:
         index = max(0, min(index, len(items) - 1))
         item = items[index]
         if item.kind == "code" and item.row_index is not None and item.line is not None and item.line.selectable:
-            self.selection_kind = "code"
-            self.selected_file_path = item.file_path
-            self.file_pane_index = item.file_index
-            self.selected_row = item.row_index
-            self.anchor_row = item.row_index
-            self.active_row = item.row_index
-            self.selected_expansion_id = None
-            self.selected_comment_id = None
+            self._select_code(item.file_index, item.file_path, item.row_index)
         elif item.kind == "expansion" and item.expansion is not None:
-            self.selection_kind = "expansion"
-            self.selected_file_path = item.file_path
-            self.file_pane_index = item.file_index
-            self.selected_expansion_id = item.expansion.id
-            self.selected_comment_id = None
-            self.selected_row = None
-            self.anchor_row = None
-            self.active_row = None
+            self._select_expansion(item.file_index, item.file_path, item.expansion.id)
         elif item.kind == "comment" and item.comment is not None:
-            self.selection_kind = "comment"
-            self.selected_file_path = item.file_path
-            self.file_pane_index = item.file_index
-            self.selected_comment_id = item.comment.id
-            self.selected_row = item.comment.sorted_rows[1]
-            self.anchor_row = None
-            self.active_row = None
-            self.selected_expansion_id = None
+            self._select_comment(item.file_index, item.file_path, item.comment)
         elif item.file_path:
-            self.selection_kind = "metadata"
-            self.selected_file_path = item.file_path
-            self.file_pane_index = item.file_index
-            self.selected_expansion_id = None
-            self.selected_comment_id = None
-            self.selected_row = None
-            self.anchor_row = None
-            self.active_row = None
+            self._select_metadata(item.file_index, item.file_path)
 
     def select_file(self, path: str) -> int:
-        file = self.file_by_path(path)
-        self.file_pane_index = self.file_index(path)
-        self.selected_file_path = file.path
+        file_index = self.file_index(path)
+        file = self.files[file_index]
         first = file.first_visible_row()
         if first is not None:
-            self.selection_kind = "code"
-            self.selected_row = first
-            self.anchor_row = first
-            self.active_row = first
-            self.selected_expansion_id = None
-            self.selected_comment_id = None
+            self._select_code(file_index, file.path, first)
         else:
-            self.selection_kind = "metadata"
-            self.selected_row = None
-            self.anchor_row = None
-            self.active_row = None
-            self.selected_expansion_id = None
-            self.selected_comment_id = None
+            self._select_metadata(file_index, file.path)
         for index, item in enumerate(self.document_items()):
             if item.kind == "file_header" and item.file_path == path:
                 return index
@@ -497,11 +497,8 @@ class ReviewState:
         deleted = len(self.comments) != before
         if deleted and self.selected_comment_id == comment_id:
             self.selection_kind = "metadata"
-            self.selected_comment_id = None
-            self.selected_row = None
-            self.anchor_row = None
-            self.active_row = None
-            self.selected_expansion_id = None
+            self._clear_item_selection()
+            self._clear_row_selection()
         return deleted
 
     def select_range(self, file_path: str, anchor_row: int, active_row: int) -> int:
@@ -509,14 +506,7 @@ class ReviewState:
         start, end = min(anchor_row, active_row), max(anchor_row, active_row)
         if not self._contiguous_visible_selection_rows(file, start, end):
             return self.selected_document_index()
-        self.selection_kind = "code"
-        self.selected_file_path = file.path
-        self.file_pane_index = self.file_index(file.path)
-        self.anchor_row = anchor_row
-        self.active_row = active_row
-        self.selected_row = active_row
-        self.selected_expansion_id = None
-        self.selected_comment_id = None
+        self._select_code(self.file_index(file.path), file.path, active_row, anchor_row=anchor_row)
         return self.selected_document_index()
 
     @staticmethod
@@ -555,20 +545,11 @@ class ReviewState:
                 row = self._first_selectable_row_between(file, expansion.reveal_start, expansion.reveal_end)
                 if row is None:
                     row = file.first_visible_row()
-                self.selected_file_path = file.path
-                self.file_pane_index = self.file_index(file.path)
-                self.selected_comment_id = None
+                file_index = self.file_index(file.path)
                 if row is None:
-                    self.selection_kind = "metadata"
-                    self.selected_row = None
-                    self.anchor_row = None
-                    self.active_row = None
+                    self._select_metadata(file_index, file.path)
                 else:
-                    self.selection_kind = "code"
-                    self.selected_row = row
-                    self.anchor_row = row
-                    self.active_row = row
-                self.selected_expansion_id = None
+                    self._select_code(file_index, file.path, row)
                 return self.selected_document_index()
         return self.selected_document_index()
 

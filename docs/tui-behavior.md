@@ -281,13 +281,9 @@ The final review message must be generated after the TUI closes so stdout delive
 
 ## Empty Review Behavior
 
-If the user quits with no comments, preferred behavior is:
+If the user quits with no comments, the TUI exits immediately without a confirmation prompt.
 
-1. Show a confirmation prompt: `No comments were added. Exit anyway?`
-2. If confirmed, exit with code `0`.
-3. If declined, return to the TUI.
-
-If the implementation chooses to exit immediately when no comments exist, that choice must be documented and tested.
+The CLI then prints the empty-review message or delivers it according to the selected non-TUI path.
 
 ## Terminal Resize Behavior
 

@@ -9,6 +9,9 @@ from .errors import GitCommandError, NoChangesFound, NotAGitRepository
 
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+INDEX_REF = "INDEX"
+MERGED_BINARY_METADATA = "Includes staged and worktree changes"
+MERGED_TEXT_METADATA = "Contains separate staged and worktree changes"
 
 
 @dataclass(frozen=True)
@@ -89,42 +92,82 @@ def collect_uncommitted(root: Path) -> tuple[ReviewSource, list[ReviewFile]]:
     staged_entries = _name_status(root, ["--cached", base, "--"])
     unstaged_entries = _name_status(root, ["--"])
     untracked_paths = _untracked_paths(root)
+    files = _collect_uncommitted_files(root, base, staged_entries, unstaged_entries, untracked_paths)
+    if not files:
+        raise NoChangesFound("no uncommitted changes found")
+    return ReviewSource("uncommitted", base_ref=base), files
+
+
+def _collect_uncommitted_files(
+    root: Path,
+    base: str,
+    staged_entries: list[NameStatus],
+    unstaged_entries: list[NameStatus],
+    untracked_paths: list[str],
+) -> list[ReviewFile]:
     untracked_path_set = set(untracked_paths)
     consumed_untracked_paths: set[str] = set()
     staged_by_path = {entry.path: entry for entry in staged_entries}
     consumed_staged_paths: set[str] = set()
     seen: set[str] = set()
     files: list[ReviewFile | None] = []
+
     for entry in unstaged_entries:
-        staged_entry = staged_by_path.get(entry.path)
-        if staged_entry is not None:
-            files.append(_build_merged_uncommitted_file(root, staged_entry, entry, base))
-            consumed_staged_paths.add(staged_entry.path)
-        else:
-            files.append(_build_file_from_refs(root, entry, "INDEX", None))
+        files.append(_build_unstaged_file(root, base, entry, staged_by_path, consumed_staged_paths))
         seen.add(entry.path)
+
     for entry in staged_entries:
         if entry.path not in consumed_staged_paths:
-            if entry.status.startswith("D") and entry.path in untracked_path_set:
-                files.append(_build_merged_uncommitted_file(root, entry, NameStatus("A", entry.path), base))
-                consumed_untracked_paths.add(entry.path)
-            else:
-                files.append(_build_file_from_refs(root, entry, base, "INDEX"))
+            files.append(_build_staged_file(root, base, entry, untracked_path_set, consumed_untracked_paths))
             seen.add(entry.path)
+
     for path in untracked_paths:
         if path not in seen and path not in consumed_untracked_paths:
             files.append(_build_untracked_file(root, path))
-    files = [file for file in files if file is not None]
-    if not files:
-        raise NoChangesFound("no uncommitted changes found")
-    return ReviewSource("uncommitted", base_ref=base), files
+
+    return _present_files(files)
+
+
+def _build_unstaged_file(
+    root: Path,
+    base: str,
+    entry: NameStatus,
+    staged_by_path: dict[str, NameStatus],
+    consumed_staged_paths: set[str],
+) -> ReviewFile | None:
+    staged_entry = staged_by_path.get(entry.path)
+    if staged_entry is not None:
+        consumed_staged_paths.add(staged_entry.path)
+        return _build_merged_uncommitted_file(root, staged_entry, entry, base)
+    return _build_file_from_refs(root, entry, INDEX_REF, None)
+
+
+def _build_staged_file(
+    root: Path,
+    base: str,
+    entry: NameStatus,
+    untracked_path_set: set[str],
+    consumed_untracked_paths: set[str],
+) -> ReviewFile | None:
+    if _is_staged_delete_recreated_in_worktree(entry, untracked_path_set):
+        consumed_untracked_paths.add(entry.path)
+        return _build_merged_uncommitted_file(root, entry, NameStatus("A", entry.path), base)
+    return _build_file_from_refs(root, entry, base, INDEX_REF)
+
+
+def _is_staged_delete_recreated_in_worktree(entry: NameStatus, untracked_path_set: set[str]) -> bool:
+    return entry.status.startswith("D") and entry.path in untracked_path_set
+
+
+def _present_files(files: list[ReviewFile | None]) -> list[ReviewFile]:
+    return [file for file in files if file is not None]
 
 
 def collect_branch_comparison(root: Path, target_branch: str) -> tuple[ReviewSource, list[ReviewFile]]:
     merge_base = run_git(root, ["merge-base", "HEAD", target_branch]).stdout.strip()
     entries = _name_status(root, [merge_base, "HEAD", "--"])
     files = [_build_file_from_refs(root, entry, merge_base, "HEAD") for entry in entries]
-    files = [file for file in files if file is not None]
+    files = _present_files(files)
     if not files:
         raise NoChangesFound(f"no changes found against {target_branch}")
     return ReviewSource("branch", target_branch=target_branch, base_ref=merge_base), files
@@ -181,77 +224,113 @@ def _build_file_from_refs(root: Path, entry: NameStatus, old_ref: str, new_ref: 
     status = _status_name(entry.status)
     old_path = entry.old_path or entry.path
     new_path = entry.path
+    old_bytes, new_bytes = _read_change_bytes(root, entry, old_ref, new_ref, old_path, new_path)
+    metadata = _metadata_for(entry)
 
+    if _is_binary(old_bytes) or _is_binary(new_bytes):
+        return _create_review_file_from_bytes(new_path, status, old_bytes, new_bytes, old_path=entry.old_path, binary=True, metadata=metadata)
+    if old_bytes == new_bytes:
+        metadata_only = _metadata_only_file(new_path, status, entry, metadata)
+        if metadata_only is not None:
+            return metadata_only
+    return _create_review_file_from_bytes(new_path, status, old_bytes, new_bytes, old_path=entry.old_path, metadata=metadata)
+
+
+def _read_change_bytes(
+    root: Path,
+    entry: NameStatus,
+    old_ref: str,
+    new_ref: str | None,
+    old_path: str,
+    new_path: str,
+) -> tuple[bytes, bytes]:
     old_bytes = b"" if entry.status == "A" else _read_tree_or_index(root, old_ref, old_path)
     if entry.status == "D":
         new_bytes = b""
-    elif new_ref == "INDEX":
+    elif new_ref == INDEX_REF:
         new_bytes = _read_index(root, new_path)
     elif new_ref is None:
         new_bytes = _read_worktree(root, new_path)
     else:
         new_bytes = _read_ref(root, new_ref, new_path)
+    return old_bytes or b"", new_bytes or b""
 
-    old_bytes = old_bytes or b""
-    new_bytes = new_bytes or b""
-    binary = _is_binary(old_bytes) or _is_binary(new_bytes)
-    metadata = _metadata_for(entry)
+
+def _metadata_only_file(
+    path: str,
+    status: str,
+    entry: NameStatus,
+    metadata: list[str],
+) -> ReviewFile | None:
+    if status in {"renamed", "copied"}:
+        action = "Renamed" if status == "renamed" else "Copied"
+        return create_review_file(
+            path,
+            status,
+            [],
+            [],
+            old_path=entry.old_path,
+            metadata=[*metadata, f"{action} without content changes"],
+        )
+    if entry.status.startswith("M"):
+        return create_review_file(path, "mode", [], [], old_path=entry.old_path, metadata=["Mode changed"])
+    return None
+
+
+def _create_review_file_from_bytes(
+    path: str,
+    status: str,
+    old_bytes: bytes,
+    new_bytes: bytes,
+    *,
+    old_path: str | None = None,
+    binary: bool = False,
+    metadata: list[str] | None = None,
+) -> ReviewFile:
     if binary:
-        return create_review_file(new_path, status, [], [], old_path=entry.old_path, binary=True, metadata=metadata)
-    if old_bytes == new_bytes:
-        if status in {"renamed", "copied"}:
-            action = "Renamed" if status == "renamed" else "Copied"
-            return create_review_file(
-                new_path,
-                status,
-                [],
-                [],
-                old_path=entry.old_path,
-                metadata=[*metadata, f"{action} without content changes"],
-            )
-        if entry.status.startswith("M"):
-            return create_review_file(new_path, "mode", [], [], old_path=entry.old_path, metadata=["Mode changed"])
+        return create_review_file(path, status, [], [], old_path=old_path, binary=True, metadata=metadata)
     return create_review_file(
-        new_path,
+        path,
         status,
         _decode_lines(old_bytes),
         _decode_lines(new_bytes),
-        old_path=entry.old_path,
+        old_path=old_path,
+        binary=binary,
         metadata=metadata,
     )
 
 
 def _build_merged_uncommitted_file(root: Path, cached_entry: NameStatus, worktree_entry: NameStatus, base: str) -> ReviewFile | None:
-    cached = _build_file_from_refs(root, cached_entry, base, "INDEX")
-    worktree = _build_file_from_refs(root, worktree_entry, "INDEX", None)
+    cached = _build_file_from_refs(root, cached_entry, base, INDEX_REF)
+    worktree = _build_file_from_refs(root, worktree_entry, INDEX_REF, None)
     if cached is None:
         return worktree
     if worktree is None:
         return cached
     if cached.binary or worktree.binary:
-        worktree.metadata = [*cached.metadata, *worktree.metadata, "Includes staged and worktree changes"]
+        worktree.metadata = _merged_metadata(cached, worktree, MERGED_BINARY_METADATA)
         return worktree
-    combined_metadata = [
-        *cached.metadata,
-        *worktree.metadata,
-        "Contains separate staged and worktree changes",
-    ]
-    if cached.status in {"renamed", "copied", "added"}:
-        status = cached.status
-    elif cached.status == "deleted" and worktree.status == "added":
-        status = "modified"
-    else:
-        status = worktree.status
-    old_path = cached.old_path or worktree.old_path
     return ReviewFile(
         path=worktree.path,
-        old_path=old_path,
-        status=status,
+        old_path=cached.old_path or worktree.old_path,
+        status=_merged_uncommitted_status(cached, worktree),
         language=worktree.language,
         lines=_combine_line_sections(("Staged changes", cached.lines), ("Worktree changes", worktree.lines)),
         binary=False,
-        metadata=combined_metadata,
+        metadata=_merged_metadata(cached, worktree, MERGED_TEXT_METADATA),
     )
+
+
+def _merged_metadata(cached: ReviewFile, worktree: ReviewFile, summary: str) -> list[str]:
+    return [*cached.metadata, *worktree.metadata, summary]
+
+
+def _merged_uncommitted_status(cached: ReviewFile, worktree: ReviewFile) -> str:
+    if cached.status in {"renamed", "copied", "added"}:
+        return cached.status
+    if cached.status == "deleted" and worktree.status == "added":
+        return "modified"
+    return worktree.status
 
 
 def _combine_line_sections(*sections: tuple[str, list[ReviewLine]]) -> list[ReviewLine]:
@@ -277,10 +356,9 @@ def _build_untracked_file(root: Path, path: str) -> ReviewFile | None:
     data = _read_worktree(root, path)
     if data is None:
         return None
-    binary = _is_binary(data)
-    if binary:
-        return create_review_file(path, "added", [], [], binary=True, metadata=["Untracked binary file"])
-    return create_review_file(path, "added", [], _decode_lines(data), metadata=["Untracked file"])
+    if _is_binary(data):
+        return _create_review_file_from_bytes(path, "added", b"", data, binary=True, metadata=["Untracked binary file"])
+    return _create_review_file_from_bytes(path, "added", b"", data, metadata=["Untracked file"])
 
 
 def _read_ref(root: Path, ref: str, path: str) -> bytes | None:
@@ -291,7 +369,7 @@ def _read_ref(root: Path, ref: str, path: str) -> bytes | None:
 
 
 def _read_tree_or_index(root: Path, ref: str, path: str) -> bytes | None:
-    if ref == "INDEX":
+    if ref == INDEX_REF:
         return _read_index(root, path)
     return _read_ref(root, ref, path)
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from pathlib import Path
 
 from .diff_model import ReviewComment, ReviewFile, ReviewLine
@@ -18,12 +17,9 @@ def format_review(state: ReviewState) -> str:
         "",
     ]
 
-    comments_by_file: dict[str, list[ReviewComment]] = defaultdict(list)
-    for comment in state.comments:
-        comments_by_file[comment.file_path].append(comment)
-
+    comments_by_file = _comments_by_file(state.comments)
     for file in state.files:
-        comments = sorted(comments_by_file.get(file.path, []), key=lambda comment: (comment.sorted_rows, comment.order))
+        comments = _comments_for_file(comments_by_file, file.path)
         if not comments:
             continue
         lines.append(f"File: {file.display_path}")
@@ -35,22 +31,31 @@ def format_review(state: ReviewState) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _comments_by_file(comments: list[ReviewComment]) -> dict[str, list[ReviewComment]]:
+    comments_by_file: dict[str, list[ReviewComment]] = {}
+    for comment in comments:
+        comments_by_file.setdefault(comment.file_path, []).append(comment)
+    return comments_by_file
+
+
+def _comments_for_file(comments_by_file: dict[str, list[ReviewComment]], path: str) -> list[ReviewComment]:
+    return sorted(comments_by_file.get(path, []), key=lambda comment: (comment.sorted_rows, comment.order))
+
+
 def _format_comment(file: ReviewFile, comment: ReviewComment) -> list[str]:
-    body: list[str] = []
-    body.append(_line_label(comment.selected_lines))
+    body = [_line_label(comment.selected_lines)]
     context_lines = _comment_context_lines(file, comment)
     code_lines = [_format_context_line(line) for line in context_lines]
-    fence = _fence_for(code_lines)
-    body.append(f"{fence}{fence_language(file.language)}")
-    body.extend(code_lines)
-    body.append(fence)
+    body.extend(_fenced_block(code_lines, fence_language(file.language)))
     body.append("Comment:")
     comment_lines = comment.body.splitlines() or [""]
-    comment_fence = _fence_for(comment_lines, "~")
-    body.append(f"{comment_fence}text")
-    body.extend(comment_lines)
-    body.append(comment_fence)
+    body.extend(_fenced_block(comment_lines, "text", fence_char="~"))
     return body
+
+
+def _fenced_block(lines: list[str], info_string: str, *, fence_char: str = "`") -> list[str]:
+    fence = _fence_for(lines, fence_char)
+    return [f"{fence}{info_string}", *lines, fence]
 
 
 def _comment_context_lines(file: ReviewFile, comment: ReviewComment, radius: int = 2) -> list[ReviewLine]:

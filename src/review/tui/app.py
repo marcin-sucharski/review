@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import curses
+from collections.abc import Callable
 from typing import Literal
 
 from ..diff_model import ReviewComment, ReviewLine
@@ -10,7 +11,60 @@ from .highlight import syntax_spans
 
 
 Focus = Literal["file", "review"]
+CommandHandler = Callable[[], None]
 GUTTER_WIDTH = 8
+INITIAL_STATUS_MESSAGE = "Tab switches panes. T toggles files. z centers code. :q quits."
+NO_SELECTED_COMMENT_MESSAGE = "No comment is attached to the selected line."
+MOUSE_SCROLL_LINES = 3
+SHIFT_UP_KEYS = {getattr(curses, "KEY_SR", -1000), getattr(curses, "KEY_SUP", -1001)}
+SHIFT_DOWN_KEYS = {getattr(curses, "KEY_SF", -1002), getattr(curses, "KEY_SDOWN", -1003)}
+BOLD_ROLES = {"keyword", "tag", "heading", "error", "rail", "emphasis"}
+BACKGROUND_COLORS = {
+    "addition": (194, curses.COLOR_GREEN),
+    "deletion": (224, curses.COLOR_RED),
+    "selection": (153, curses.COLOR_CYAN),
+}
+FOREGROUND_WITH_BACKGROUND = {
+    "plain": curses.COLOR_BLACK,
+    "line-number": curses.COLOR_BLACK,
+    "rail": curses.COLOR_YELLOW,
+    "punctuation": curses.COLOR_BLACK,
+    "muted": curses.COLOR_BLACK,
+    "keyword": curses.COLOR_BLUE,
+    "function": curses.COLOR_MAGENTA,
+    "builtin": curses.COLOR_MAGENTA,
+    "type": curses.COLOR_BLUE,
+    "string": curses.COLOR_MAGENTA,
+    "number": curses.COLOR_BLUE,
+    "comment": curses.COLOR_BLUE,
+    "tag": curses.COLOR_MAGENTA,
+    "attribute": curses.COLOR_BLUE,
+    "heading": curses.COLOR_MAGENTA,
+    "emphasis": curses.COLOR_BLUE,
+    "operator": curses.COLOR_BLACK,
+    "error": curses.COLOR_RED,
+}
+FOREGROUND_DEFAULT = {
+    "header": curses.COLOR_CYAN,
+    "warning": curses.COLOR_YELLOW,
+    "link": curses.COLOR_BLUE,
+    "muted": curses.COLOR_BLUE,
+    "line-number": curses.COLOR_BLUE,
+    "rail": curses.COLOR_YELLOW,
+    "keyword": curses.COLOR_BLUE,
+    "function": curses.COLOR_MAGENTA,
+    "builtin": curses.COLOR_MAGENTA,
+    "type": curses.COLOR_CYAN,
+    "string": curses.COLOR_GREEN,
+    "number": curses.COLOR_CYAN,
+    "comment": curses.COLOR_BLUE,
+    "tag": curses.COLOR_MAGENTA,
+    "attribute": curses.COLOR_BLUE,
+    "heading": curses.COLOR_MAGENTA,
+    "emphasis": curses.COLOR_BLUE,
+    "operator": curses.COLOR_RED,
+    "error": curses.COLOR_RED,
+}
 
 
 class ReviewApp:
@@ -24,9 +78,8 @@ class ReviewApp:
         self.comment_mode = False
         self.comment_buffer = ""
         self.editing_comment_id: str | None = None
-        self.status_message = "Tab switches panes. T toggles files. z centers code. :q quits."
+        self.status_message = INITIAL_STATUS_MESSAGE
         self.quit_requested = False
-        self.confirm_empty_quit = False
         self.file_pane_visible = True
         self.mouse_drag_anchor: tuple[str, int] | None = None
         self.screen_map: dict[int, int] = {}
@@ -160,61 +213,56 @@ class ReviewApp:
     ) -> int:
         if item.kind == "file_header":
             attr = curses.A_BOLD | self._style("header")
-            self._safe_addnstr(stdscr, y, x, f" {item.text} ".ljust(width), width - 1, attr)
-            return 1
+            return self._draw_full_width_row(stdscr, y, x, width, f" {item.text} ", attr)
         if item.kind == "metadata":
-            self._safe_addnstr(stdscr, y, x, f"   {item.text}".ljust(width), width - 1, self._style("warning"))
-            return 1
+            return self._draw_full_width_row(stdscr, y, x, width, f"   {item.text}", self._style("warning"))
         if item.kind == "expansion" and item.expansion is not None:
             attr = self._style("link") | (curses.A_REVERSE if selected else curses.A_NORMAL)
-            text = f"   ... {item.expansion.label()} ..."
-            self._safe_addnstr(stdscr, y, x, text.ljust(width), width - 1, attr)
-            return 1
+            return self._draw_full_width_row(stdscr, y, x, width, f"   ... {item.expansion.label()} ...", attr)
         if item.kind == "comment" and item.comment is not None:
             return self._draw_comment(stdscr, y, x, width, item.comment.body, saved=True, selected=selected)
         if item.kind == "code" and item.line is not None and item.row_index is not None:
-            used = self._draw_code_line(stdscr, y, x, width, item, selected)
-            if self.comment_mode and self.state.is_row_in_selection(item.file_path, item.row_index):
-                selected_range = self.state.selected_range()
-                if selected_range and item.row_index == selected_range[1]:
-                    used += self._draw_comment(
-                        stdscr,
-                        y + used,
-                        x,
-                        width,
-                        self.comment_buffer or " ",
-                        saved=False,
-                    )
-            return used
+            return self._draw_code_item(stdscr, y, x, width, item, selected)
         return 1
+
+    def _draw_full_width_row(self, stdscr, y: int, x: int, width: int, text: str, attr: int) -> int:
+        self._safe_addnstr(stdscr, y, x, text.ljust(width), width - 1, attr)
+        return 1
+
+    def _draw_code_item(self, stdscr, y: int, x: int, width: int, item: DocumentItem, selected: bool) -> int:
+        used = self._draw_code_line(stdscr, y, x, width, item, selected)
+        if self._should_draw_comment_input(item):
+            used += self._draw_comment(stdscr, y + used, x, width, self.comment_buffer or " ", saved=False)
+        return used
+
+    def _should_draw_comment_input(self, item: DocumentItem) -> bool:
+        if not self.comment_mode or item.row_index is None:
+            return False
+        if not self.state.is_row_in_selection(item.file_path, item.row_index):
+            return False
+        selected_range = self.state.selected_range()
+        return selected_range is not None and item.row_index == selected_range[1]
 
     def _draw_code_line(self, stdscr, y: int, x: int, width: int, item: DocumentItem, selected: bool) -> int:
         line = item.line
         assert line is not None
         number = line.primary_line
-        body_width = max(10, width - GUTTER_WIDTH - 1)
+        body_width = _body_width(width)
         chunks = _wrap_text_segments(line.text, body_width)
         selected_range = item.row_index is not None and self.state.is_row_in_selection(item.file_path, item.row_index)
         range_rail = selected_range or self._row_has_comment_range(item.file_path, item.row_index)
         background = self._line_background(line, selected or selected_range)
-        modifiers = curses.A_NORMAL
-        if selected_range:
-            if item.row_index == self.state.anchor_row:
-                modifiers |= curses.A_BOLD
-            if item.row_index == self.state.active_row:
-                modifiers |= curses.A_UNDERLINE
-        elif selected:
-            modifiers |= curses.A_UNDERLINE
+        modifiers = self._code_line_modifiers(item, selected, selected_range)
         file = self.state.file_by_path(item.file_path)
         spans = syntax_spans(line.text, file.language)
         for visual_offset, (chunk, source_offset) in enumerate(chunks):
             if y + visual_offset >= self.content_height:
                 break
-            number_text = "    " if visual_offset > 0 or number is None else str(number).rjust(4)
+            number_text = _line_number_text(number, visual_offset)
             marker = line.marker if visual_offset == 0 else " "
             row_attr = self._style("plain", background, modifiers)
             self._safe_addnstr(stdscr, y + visual_offset, x, " " * max(0, width - 1), width - 1, row_attr)
-            self._draw_code_gutter(stdscr, y + visual_offset, x, number_text, marker, range_rail, background, modifiers)
+            self._draw_gutter(stdscr, y + visual_offset, x, number_text, marker, range_rail, background, modifiers)
             self._draw_syntax(
                 stdscr,
                 y + visual_offset,
@@ -228,7 +276,18 @@ class ReviewApp:
             )
         return max(1, len(chunks))
 
-    def _draw_code_gutter(
+    def _code_line_modifiers(self, item: DocumentItem, selected: bool, selected_range: bool) -> int:
+        modifiers = curses.A_NORMAL
+        if selected_range:
+            if item.row_index == self.state.anchor_row:
+                modifiers |= curses.A_BOLD
+            if item.row_index == self.state.active_row:
+                modifiers |= curses.A_UNDERLINE
+        elif selected:
+            modifiers |= curses.A_UNDERLINE
+        return modifiers
+
+    def _draw_gutter(
         self,
         stdscr,
         y: int,
@@ -253,8 +312,8 @@ class ReviewApp:
         for line in lines:
             if y + used >= self.content_height:
                 break
-            chunks = _wrap_text(line, max(10, width - GUTTER_WIDTH - 1))
-            for offset, chunk in enumerate(chunks):
+            chunks = _wrap_text(line, _body_width(width))
+            for chunk in chunks:
                 if y + used >= self.content_height:
                     break
                 self._draw_comment_gutter(stdscr, y + used, x, selected=selected)
@@ -265,9 +324,7 @@ class ReviewApp:
     def _draw_comment_gutter(self, stdscr, y: int, x: int, *, selected: bool = False) -> None:
         background = "selection" if selected else None
         modifiers = curses.A_UNDERLINE if selected else curses.A_NORMAL
-        self._safe_addnstr(stdscr, y, x, "     ", 5, self._style("line-number", background, modifiers))
-        self._safe_addnstr(stdscr, y, x + 5, "|", 1, self._style("rail", background, modifiers))
-        self._safe_addnstr(stdscr, y, x + 6, "  ", 2, self._style("line-number", background, modifiers))
+        self._draw_gutter(stdscr, y, x, "    ", " ", True, background, modifiers)
 
     def _draw_syntax(
         self,
@@ -298,17 +355,16 @@ class ReviewApp:
 
     def _draw_status(self, stdscr, height: int, width: int) -> None:
         y = height - 1
-        if self.command_mode:
-            text = ":" + self.command_buffer
-            attr = curses.A_REVERSE
-        elif self.comment_mode:
-            action = "Edit comment" if self.editing_comment_id else "New comment"
-            text = f"{action}: Enter saves, Ctrl+J inserts newline, Esc cancels"
-            attr = curses.A_REVERSE
-        else:
-            text = self.status_message
-            attr = self._style("muted")
+        text, attr = self._status_line()
         self._safe_addnstr(stdscr, y, 0, text.ljust(width), width - 1, attr)
+
+    def _status_line(self) -> tuple[str, int]:
+        if self.command_mode:
+            return ":" + self.command_buffer, curses.A_REVERSE
+        if self.comment_mode:
+            action = "Edit comment" if self.editing_comment_id else "New comment"
+            return f"{action}: Enter saves, Ctrl+J inserts newline, Esc cancels", curses.A_REVERSE
+        return self.status_message, self._style("muted")
 
     def _handle_key(self, key: int | str) -> None:
         if self.comment_mode:
@@ -318,31 +374,40 @@ class ReviewApp:
             self._handle_command_key(key)
             return
 
-        if key in (9, "\t"):
-            self.confirm_empty_quit = False
-            if self.file_pane_visible:
-                self.focus = "review" if self.focus == "file" else "file"
-            else:
-                self.focus = "review"
-            return
-        if key in ("t", "T", ord("t"), ord("T")):
-            self._toggle_file_pane()
-            return
-        if key in (ord(":"), ":"):
-            self.command_mode = True
-            self.command_buffer = ""
-            return
-        self.confirm_empty_quit = False
-        if key in ("z", ord("z")):
-            self._center_review_on_selection()
-            return
-        if key == curses.KEY_MOUSE:
-            self._handle_mouse()
+        if self._handle_global_key(key):
             return
         if self.focus == "file":
             self._handle_file_key(key)
         else:
             self._handle_review_key(key)
+
+    def _handle_global_key(self, key: int | str) -> bool:
+        if key in (9, "\t"):
+            self._switch_focus()
+            return True
+        if key in ("t", "T", ord("t"), ord("T")):
+            self._toggle_file_pane()
+            return True
+        if key in (ord(":"), ":"):
+            self._enter_command_mode()
+            return True
+        if key in ("z", ord("z")):
+            self._center_review_on_selection()
+            return True
+        if key == curses.KEY_MOUSE:
+            self._handle_mouse()
+            return True
+        return False
+
+    def _switch_focus(self) -> None:
+        if self.file_pane_visible:
+            self.focus = "review" if self.focus == "file" else "file"
+        else:
+            self.focus = "review"
+
+    def _enter_command_mode(self) -> None:
+        self.command_mode = True
+        self.command_buffer = ""
 
     def _handle_file_key(self, key: int | str) -> None:
         if key == curses.KEY_UP:
@@ -359,35 +424,38 @@ class ReviewApp:
                 self.focus = "review"
 
     def _handle_review_key(self, key: int | str) -> None:
-        shift_up = {getattr(curses, "KEY_SR", -1000), getattr(curses, "KEY_SUP", -1001)}
-        shift_down = {getattr(curses, "KEY_SF", -1002), getattr(curses, "KEY_SDOWN", -1003)}
         if key == curses.KEY_UP:
-            self.state.move_selection(-1)
-            self._keep_selection_in_editor_view()
+            self._move_review_selection(-1)
         elif key == curses.KEY_DOWN:
-            self.state.move_selection(1)
-            self._keep_selection_in_editor_view()
+            self._move_review_selection(1)
         elif key == curses.KEY_PPAGE:
             self._page_review_selection(-1)
         elif key == curses.KEY_NPAGE:
             self._page_review_selection(1)
-        elif key in shift_up:
-            self.state.extend_selection(-1)
-            self._keep_selection_in_editor_view()
-        elif key in shift_down:
-            self.state.extend_selection(1)
-            self._keep_selection_in_editor_view()
+        elif key in SHIFT_UP_KEYS:
+            self._move_review_selection(-1, extend=True)
+        elif key in SHIFT_DOWN_KEYS:
+            self._move_review_selection(1, extend=True)
         elif key == curses.KEY_DC:
             self._delete_selected_comment()
         elif _is_enter(key):
-            action = self.state.activate_selection()
-            if action == "comment":
-                self.comment_mode = True
-                self.comment_buffer = ""
-            elif action == "edit-comment":
-                self._start_edit_selected_comment()
-            elif action == "expanded":
-                self._keep_selection_in_editor_view()
+            self._activate_review_selection()
+
+    def _move_review_selection(self, delta: int, *, extend: bool = False) -> None:
+        if extend:
+            self.state.extend_selection(delta)
+        else:
+            self.state.move_selection(delta)
+        self._keep_selection_in_editor_view()
+
+    def _activate_review_selection(self) -> None:
+        action = self.state.activate_selection()
+        if action == "comment":
+            self._start_new_comment()
+        elif action == "edit-comment":
+            self._start_edit_selected_comment()
+        elif action == "expanded":
+            self._keep_selection_in_editor_view()
 
     def _handle_command_key(self, key: int | str) -> None:
         if key in (27, "\x1b"):
@@ -397,77 +465,73 @@ class ReviewApp:
             self.command_buffer = self.command_buffer[:-1]
             return
         if _is_enter(key):
-            command = self.command_buffer.strip()
-            self.command_mode = False
-            handler = self.command_handlers.get(command)
-            if handler is not None:
-                handler()
-            else:
-                self.status_message = f"Unknown command: {command}"
+            self._run_command_buffer()
             return
-        if isinstance(key, str) and len(key) == 1 and key.isprintable():
-            self.command_buffer += key
-        elif isinstance(key, int) and 32 <= key <= 126:
-            self.command_buffer += chr(key)
+        text = _printable_key(key)
+        if text is not None:
+            self.command_buffer += text
+
+    def _run_command_buffer(self) -> None:
+        command = self.command_buffer.strip()
+        self.command_mode = False
+        handler = self.command_handlers.get(command)
+        if handler is not None:
+            handler()
+        else:
+            self.status_message = f"Unknown command: {command}"
 
     def _handle_comment_key(self, key: int | str) -> None:
         if key in (27, "\x1b"):
-            self.comment_mode = False
-            self.comment_buffer = ""
-            self.editing_comment_id = None
+            self._close_comment_input()
             return
         if _is_backspace(key):
             self.comment_buffer = self.comment_buffer[:-1]
             return
-        if key in (10, "\n", "\x0a", 14, "\x0e"):
+        if _is_comment_newline(key):
             self.comment_buffer += "\n"
             return
         if _is_enter(key):
-            if self.editing_comment_id:
-                if self.state.update_comment(self.editing_comment_id, self.comment_buffer):
-                    self.status_message = "Comment updated."
-                else:
-                    self.status_message = "Empty comments are ignored."
-            elif self.state.add_comment(self.comment_buffer):
-                self.status_message = "Comment saved."
-                self.confirm_empty_quit = False
-            else:
-                self.status_message = "Empty comments are ignored."
-            self.comment_mode = False
-            self.comment_buffer = ""
-            self.editing_comment_id = None
+            self._submit_comment_input()
             return
         if key in (9, "\t"):
             self.comment_buffer += "\t"
             return
-        if isinstance(key, str) and len(key) == 1 and key.isprintable():
-            self.comment_buffer += key
-        elif isinstance(key, int) and 32 <= key <= 126:
-            self.comment_buffer += chr(key)
+        text = _printable_key(key)
+        if text is not None:
+            self.comment_buffer += text
 
-    def _build_command_handlers(self):
-        return {
-            "q": self._command_quit,
-            "quit": self._command_quit,
-            "q!": self._command_force_quit,
-            "quit!": self._command_force_quit,
-            "e": self._command_edit_comment,
-            "edit": self._command_edit_comment,
-            "edit-comment": self._command_edit_comment,
-            "d": self._command_delete_comment,
-            "delete": self._command_delete_comment,
-            "delete-comment": self._command_delete_comment,
-            "c": self._command_center,
-            "center": self._command_center,
-            "centre": self._command_center,
-        }
+    def _submit_comment_input(self) -> None:
+        if self.editing_comment_id:
+            if self.state.update_comment(self.editing_comment_id, self.comment_buffer):
+                self.status_message = "Comment updated."
+            else:
+                self.status_message = "Empty comments are ignored."
+        elif self.state.add_comment(self.comment_buffer):
+            self.status_message = "Comment saved."
+        else:
+            self.status_message = "Empty comments are ignored."
+        self._close_comment_input()
+
+    def _close_comment_input(self) -> None:
+        self.comment_mode = False
+        self.comment_buffer = ""
+        self.editing_comment_id = None
+
+    def _build_command_handlers(self) -> dict[str, CommandHandler]:
+        handlers: dict[str, CommandHandler] = {}
+        for aliases, handler in (
+            (("q", "quit"), self._command_quit),
+            (("q!", "quit!"), self._command_force_quit),
+            (("e", "edit", "edit-comment"), self._command_edit_comment),
+            (("d", "delete", "delete-comment"), self._command_delete_comment),
+            (("c", "center", "centre"), self._command_center),
+        ):
+            for alias in aliases:
+                handlers[alias] = handler
+        return handlers
 
     def _command_quit(self) -> None:
-        if self.state.comments or self.confirm_empty_quit:
-            self.quit_requested = True
-        else:
-            self.confirm_empty_quit = True
-            self.status_message = "No comments were added. Type :q again to quit without comments."
+        self.quit_requested = True
 
     def _command_force_quit(self) -> None:
         self.quit_requested = True
@@ -478,10 +542,15 @@ class ReviewApp:
     def _command_edit_comment(self) -> None:
         self._start_edit_selected_comment()
 
+    def _start_new_comment(self) -> None:
+        self.comment_mode = True
+        self.comment_buffer = ""
+        self.editing_comment_id = None
+
     def _start_edit_selected_comment(self) -> None:
         comment = self.state.comment_for_selection()
         if comment is None:
-            self.status_message = "No comment is attached to the selected line."
+            self.status_message = NO_SELECTED_COMMENT_MESSAGE
             return
         self.comment_mode = True
         self.editing_comment_id = comment.id
@@ -493,7 +562,7 @@ class ReviewApp:
     def _delete_selected_comment(self) -> None:
         comment = self.state.comment_for_selection()
         if comment is None:
-            self.status_message = "No comment is attached to the selected line."
+            self.status_message = NO_SELECTED_COMMENT_MESSAGE
         elif self.state.delete_comment(comment.id):
             self.status_message = "Comment deleted."
         else:
@@ -549,60 +618,93 @@ class ReviewApp:
         self.state.update_file_highlight_for_document_index(active_after)
 
     def _handle_mouse(self) -> None:
+        mouse = self._read_mouse()
+        if mouse is None:
+            return
+        x, y, button = mouse
+        if y >= self.content_height:
+            return
+        if self._handle_mouse_wheel(button):
+            return
+        if x < self.left_width:
+            self._handle_file_pane_mouse(y)
+            return
+        self._handle_review_pane_mouse(y, button)
+
+    @staticmethod
+    def _read_mouse() -> tuple[int, int, int] | None:
         try:
             _, x, y, _, button = curses.getmouse()
         except curses.error:
-            return
-        if y >= self.content_height:
-            return
-        wheel_up = getattr(curses, "BUTTON4_PRESSED", 0)
-        wheel_down = getattr(curses, "BUTTON5_PRESSED", 0)
-        if button & wheel_up:
-            self.review_scroll = max(0, self.review_scroll - 3)
-            self.state.update_file_highlight_for_document_index(self.review_scroll)
-            self._select_first_visible_selectable()
-            return
-        if button & wheel_down:
-            self.review_scroll = min(max(0, len(self.state.document_items()) - 1), self.review_scroll + 3)
-            self.state.update_file_highlight_for_document_index(self.review_scroll)
-            self._select_first_visible_selectable()
-            return
-        button1_pressed = getattr(curses, "BUTTON1_PRESSED", 0)
-        button1_clicked = getattr(curses, "BUTTON1_CLICKED", 0)
-        button1_released = getattr(curses, "BUTTON1_RELEASED", 0)
-        report_position = getattr(curses, "REPORT_MOUSE_POSITION", 0)
-        if x < self.left_width:
-            self.focus = "file"
-            self.mouse_drag_anchor = None
-            rows = build_file_tree(self.state.files)
-            row_index = self.file_scroll + y - 1
-            if 0 <= row_index < len(rows):
-                row = rows[row_index]
-                if row.kind == "file" and row.file_index is not None:
-                    self.review_scroll = self.state.select_file(self.state.files[row.file_index].path)
-            return
+            return None
+        return x, y, button
+
+    def _handle_mouse_wheel(self, button: int) -> bool:
+        if button & _mouse_mask("BUTTON4_PRESSED"):
+            self._scroll_review_for_mouse(-MOUSE_SCROLL_LINES)
+            return True
+        if button & _mouse_mask("BUTTON5_PRESSED"):
+            self._scroll_review_for_mouse(MOUSE_SCROLL_LINES)
+            return True
+        return False
+
+    def _scroll_review_for_mouse(self, delta: int) -> None:
+        if delta < 0:
+            self.review_scroll = max(0, self.review_scroll + delta)
+        else:
+            max_scroll = max(0, len(self.state.document_items()) - 1)
+            self.review_scroll = min(max_scroll, self.review_scroll + delta)
+        self.state.update_file_highlight_for_document_index(self.review_scroll)
+        self._select_first_visible_selectable()
+
+    def _handle_file_pane_mouse(self, y: int) -> None:
+        self.focus = "file"
+        self._clear_mouse_drag()
+        row = self._file_tree_row_at(y)
+        if row is not None and row.kind == "file" and row.file_index is not None:
+            self.review_scroll = self.state.select_file(self.state.files[row.file_index].path)
+
+    def _file_tree_row_at(self, y: int) -> FileTreeRow | None:
+        rows = build_file_tree(self.state.files)
+        row_index = self.file_scroll + y - 1
+        if 0 <= row_index < len(rows):
+            return rows[row_index]
+        return None
+
+    def _handle_review_pane_mouse(self, y: int, button: int) -> None:
         self.focus = "review"
         document_index = self.screen_map.get(y)
-        if document_index is not None:
-            item = self.state.document_items()[document_index]
-            if item.kind == "code" and item.row_index is not None:
-                if button & (button1_pressed | button1_clicked):
-                    self.state.select_document_index(document_index)
-                    self.mouse_drag_anchor = (item.file_path, item.row_index)
-                elif button & (report_position | button1_released):
-                    if self.mouse_drag_anchor and self.mouse_drag_anchor[0] == item.file_path:
-                        self.state.select_range(self.mouse_drag_anchor[0], self.mouse_drag_anchor[1], item.row_index)
-                    if button & button1_released:
-                        self.mouse_drag_anchor = None
-                else:
-                    self.state.select_document_index(document_index)
-            elif item.kind == "expansion" and item.expansion is not None and button & (button1_pressed | button1_clicked):
-                self.mouse_drag_anchor = None
-                self.review_scroll = self.state.expand_context(item.expansion.id)
-            else:
-                self.mouse_drag_anchor = None
-                self.state.select_document_index(document_index)
-                self.review_scroll = document_index
+        if document_index is None:
+            return
+        item = self.state.document_items()[document_index]
+        if item.kind == "code" and item.row_index is not None:
+            self._handle_code_mouse(document_index, item, button)
+        elif item.kind == "expansion" and item.expansion is not None and _mouse_primary_down(button):
+            self._clear_mouse_drag()
+            self.review_scroll = self.state.expand_context(item.expansion.id)
+        else:
+            self._select_review_mouse_item(document_index)
+
+    def _handle_code_mouse(self, document_index: int, item: DocumentItem, button: int) -> None:
+        assert item.row_index is not None
+        if _mouse_primary_down(button):
+            self.state.select_document_index(document_index)
+            self.mouse_drag_anchor = (item.file_path, item.row_index)
+        elif _mouse_drag_or_release(button):
+            if self.mouse_drag_anchor and self.mouse_drag_anchor[0] == item.file_path:
+                self.state.select_range(self.mouse_drag_anchor[0], self.mouse_drag_anchor[1], item.row_index)
+            if button & _mouse_mask("BUTTON1_RELEASED"):
+                self._clear_mouse_drag()
+        else:
+            self.state.select_document_index(document_index)
+
+    def _select_review_mouse_item(self, document_index: int) -> None:
+        self._clear_mouse_drag()
+        self.state.select_document_index(document_index)
+        self.review_scroll = document_index
+
+    def _clear_mouse_drag(self) -> None:
+        self.mouse_drag_anchor = None
 
     def _ensure_selected_visible(self) -> None:
         active = self.state.active_document_index()
@@ -679,9 +781,7 @@ class ReviewApp:
 
     @staticmethod
     def _role_modifier(role: str) -> int:
-        if role in {"keyword", "tag", "heading", "error", "rail"}:
-            return curses.A_BOLD
-        if role == "emphasis":
+        if role in BOLD_ROLES:
             return curses.A_BOLD
         return curses.A_NORMAL
 
@@ -716,56 +816,15 @@ class ReviewApp:
     @staticmethod
     def _foreground_color(role: str, background: str | None) -> int:
         if background is not None:
-            return {
-                "plain": curses.COLOR_BLACK,
-                "line-number": curses.COLOR_BLACK,
-                "rail": curses.COLOR_YELLOW,
-                "punctuation": curses.COLOR_BLACK,
-                "muted": curses.COLOR_BLACK,
-                "keyword": curses.COLOR_BLUE,
-                "function": curses.COLOR_MAGENTA,
-                "builtin": curses.COLOR_MAGENTA,
-                "type": curses.COLOR_BLUE,
-                "string": curses.COLOR_MAGENTA,
-                "number": curses.COLOR_BLUE,
-                "comment": curses.COLOR_BLUE,
-                "tag": curses.COLOR_MAGENTA,
-                "attribute": curses.COLOR_BLUE,
-                "heading": curses.COLOR_MAGENTA,
-                "emphasis": curses.COLOR_BLUE,
-                "operator": curses.COLOR_BLACK,
-                "error": curses.COLOR_RED,
-            }.get(role, curses.COLOR_BLACK)
-        return {
-            "header": curses.COLOR_CYAN,
-            "warning": curses.COLOR_YELLOW,
-            "link": curses.COLOR_BLUE,
-            "muted": curses.COLOR_BLUE,
-            "line-number": curses.COLOR_BLUE,
-            "rail": curses.COLOR_YELLOW,
-            "keyword": curses.COLOR_BLUE,
-            "function": curses.COLOR_MAGENTA,
-            "builtin": curses.COLOR_MAGENTA,
-            "type": curses.COLOR_CYAN,
-            "string": curses.COLOR_GREEN,
-            "number": curses.COLOR_CYAN,
-            "comment": curses.COLOR_BLUE,
-            "tag": curses.COLOR_MAGENTA,
-            "attribute": curses.COLOR_BLUE,
-            "heading": curses.COLOR_MAGENTA,
-            "emphasis": curses.COLOR_BLUE,
-            "operator": curses.COLOR_RED,
-            "error": curses.COLOR_RED,
-        }.get(role, -1)
+            return FOREGROUND_WITH_BACKGROUND.get(role, curses.COLOR_BLACK)
+        return FOREGROUND_DEFAULT.get(role, -1)
 
     @staticmethod
     def _background_color(background: str | None) -> int:
-        if background == "addition":
-            return _terminal_color(194, curses.COLOR_GREEN)
-        if background == "deletion":
-            return _terminal_color(224, curses.COLOR_RED)
-        if background == "selection":
-            return _terminal_color(153, curses.COLOR_CYAN)
+        color = BACKGROUND_COLORS.get(background or "")
+        if color is not None:
+            preferred_256, fallback = color
+            return _terminal_color(preferred_256, fallback)
         return -1
 
     @staticmethod
@@ -801,12 +860,46 @@ def _terminal_color(preferred_256: int, fallback: int) -> int:
     return fallback
 
 
+def _mouse_mask(name: str) -> int:
+    return getattr(curses, name, 0)
+
+
+def _mouse_primary_down(button: int) -> bool:
+    return bool(button & (_mouse_mask("BUTTON1_PRESSED") | _mouse_mask("BUTTON1_CLICKED")))
+
+
+def _mouse_drag_or_release(button: int) -> bool:
+    return bool(button & (_mouse_mask("REPORT_MOUSE_POSITION") | _mouse_mask("BUTTON1_RELEASED")))
+
+
 def _is_enter(key: int | str) -> bool:
     return key in (curses.KEY_ENTER, 10, 13, "\n", "\r")
 
 
+def _is_comment_newline(key: int | str) -> bool:
+    return key in (10, "\n", "\x0a", 14, "\x0e")
+
+
 def _is_backspace(key: int | str) -> bool:
     return key in (curses.KEY_BACKSPACE, 127, 8, "\x7f", "\b")
+
+
+def _printable_key(key: int | str) -> str | None:
+    if isinstance(key, str) and len(key) == 1 and key.isprintable():
+        return key
+    if isinstance(key, int) and 32 <= key <= 126:
+        return chr(key)
+    return None
+
+
+def _body_width(width: int) -> int:
+    return max(10, width - GUTTER_WIDTH - 1)
+
+
+def _line_number_text(number: int | None, visual_offset: int) -> str:
+    if visual_offset > 0 or number is None:
+        return "    "
+    return str(number).rjust(4)
 
 
 def _wrap_text(text: str, width: int) -> list[str]:

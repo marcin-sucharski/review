@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest import mock
 
 from review.errors import GitCommandError
+from review import git
 from review.git import parse_name_status_z, repository_root, run_git
 
 
@@ -38,6 +39,21 @@ class GitParseTests(unittest.TestCase):
             with self.assertRaises(GitCommandError) as ctx:
                 repository_root(Path("/tmp"))
         self.assertIn("git executable not found", str(ctx.exception))
+
+    def test_binary_review_file_creation_does_not_decode_blob_contents(self):
+        with mock.patch.object(git, "_decode_lines", side_effect=AssertionError("binary data was decoded")):
+            file = git._create_review_file_from_bytes(
+                "image.bin",
+                "added",
+                b"\x00" * 1024,
+                b"\x00" * 2048,
+                binary=True,
+                metadata=["binary"],
+            )
+
+        self.assertTrue(file.binary)
+        self.assertEqual(file.lines, [])
+        self.assertEqual(file.metadata, ["binary"])
 
 
 if __name__ == "__main__":

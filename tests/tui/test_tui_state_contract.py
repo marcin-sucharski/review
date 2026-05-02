@@ -66,18 +66,9 @@ class TuiStateContractTests(unittest.TestCase):
         app._ensure_selected_visible()
         self.assertEqual(app.review_scroll, binary_header_index)
 
-    def test_empty_quit_uses_documented_q_confirmation(self):
+    def test_empty_quit_exits_without_confirmation(self):
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [])
         app = ReviewApp(state)
-        app.command_buffer = "q"
-        app._handle_command_key(10)
-        self.assertFalse(app.quit_requested)
-        self.assertTrue(app.confirm_empty_quit)
-        app._handle_key(9)
-        self.assertFalse(app.confirm_empty_quit)
-        app.command_buffer = "q"
-        app._handle_command_key(10)
-        self.assertFalse(app.quit_requested)
         app.command_buffer = "q"
         app._handle_command_key(10)
         self.assertTrue(app.quit_requested)

@@ -33,6 +33,26 @@ LEXER_ALIASES = {
     "text": "text",
 }
 
+TOKEN_ROLE_GROUPS = ()
+if Token is not None:
+    TOKEN_ROLE_GROUPS = (
+        (Comment, "comment"),
+        (Keyword, "keyword"),
+        (String, "string"),
+        (Number, "number"),
+        (Name.Function, "function"),
+        (Name.Class, "type"),
+        (Name.Builtin, "builtin"),
+        (Name.Tag, "tag"),
+        (Name.Attribute, "attribute"),
+        (Generic.Heading, "heading"),
+        (Generic.Strong, "emphasis"),
+        (Generic.Emph, "emphasis"),
+        (Operator, "operator"),
+        (Punctuation, "punctuation"),
+        (Error, "error"),
+    )
+
 
 def highlighting_available() -> bool:
     return lex is not None and get_lexer_by_name is not None
@@ -130,32 +150,7 @@ def _gitignore_line_spans(text: str, base_offset: int) -> list[tuple[int, int, s
 def _role_for_token(token_type) -> str | None:
     if Token is None:
         return None
-    if token_type in Comment:
-        return "comment"
-    if token_type in Keyword:
-        return "keyword"
-    if token_type in String:
-        return "string"
-    if token_type in Number:
-        return "number"
-    if token_type in Name.Function:
-        return "function"
-    if token_type in Name.Class:
-        return "type"
-    if token_type in Name.Builtin:
-        return "builtin"
-    if token_type in Name.Tag:
-        return "tag"
-    if token_type in Name.Attribute:
-        return "attribute"
-    if token_type in Generic.Heading:
-        return "heading"
-    if token_type in Generic.Strong or token_type in Generic.Emph:
-        return "emphasis"
-    if token_type in Operator:
-        return "operator"
-    if token_type in Punctuation:
-        return "punctuation"
-    if token_type in Error:
-        return "error"
+    for token_group, role in TOKEN_ROLE_GROUPS:
+        if token_type in token_group:
+            return role
     return None
