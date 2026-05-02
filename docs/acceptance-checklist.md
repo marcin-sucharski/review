@@ -18,8 +18,10 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Startup prompts for uncommitted or branch comparison review.
 - [ ] Startup source selection supports arrow-key navigation and Enter.
 - [ ] Startup and delivery menus are compact inline menus and remain readable in light terminals.
+- [ ] Startup source menu exits on a single `Ctrl+C`.
 - [ ] Branch comparison allows selecting a target branch.
 - [ ] Branch target selection supports arrow-key navigation and Enter.
+- [ ] Branch target selection requires double `Ctrl+C` to cancel.
 - [ ] Canceling prompts exits cleanly.
 
 ## Git
@@ -38,7 +40,9 @@ Use this checklist to decide whether the initial implementation is complete.
 
 ## TUI Layout
 
-- [ ] Two vertical panes are visible.
+- [ ] Review pane is visible and focused by default.
+- [ ] File pane is hidden by default.
+- [ ] File pane can be shown with `T`.
 - [ ] File pane lists changed files.
 - [ ] File pane renders changed files as a collapsed directory tree.
 - [ ] Review pane shows one continuous document for all files.
@@ -64,6 +68,9 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] YAML highlighted.
 - [ ] Python highlighted.
 - [ ] Markdown highlighted.
+- [ ] Nix highlighted.
+- [ ] Gitignore-style files highlighted.
+- [ ] Lock files with JSON content highlighted.
 - [ ] Unknown files fall back to plain text.
 
 ## Navigation
@@ -80,6 +87,8 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Mouse click focuses panes.
 - [ ] Mouse click selects files and lines.
 - [ ] Mouse wheel scrolling works where supported.
+- [ ] First `Ctrl+C` in the TUI shows confirmation instead of quitting.
+- [ ] Second consecutive `Ctrl+C` in the TUI quits.
 
 ## Selection And Comments
 
@@ -89,6 +98,7 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] `Enter` opens inline comment input for selected code.
 - [ ] Single-line comments save correctly.
 - [ ] Multi-line comments save correctly.
+- [ ] `Ctrl+J` inserts comment newlines immediately without waiting for another character.
 - [ ] Saved comments render inline.
 - [ ] Comment range marker is visible between line numbers and change markers.
 - [ ] Inline saved comments render only the comment body.
@@ -115,6 +125,7 @@ Use this checklist to decide whether the initial implementation is complete.
 
 - [ ] Quit flow prompts for delivery target when comments exist.
 - [ ] Delivery target selection supports arrow-key navigation and Enter.
+- [ ] Delivery target selection requires double `Ctrl+C` to cancel.
 - [ ] Available tmux panes are listed with pane ID and title.
 - [ ] Current pane is marked when detectable.
 - [ ] No-pane/stdout option is always available.
@@ -122,6 +133,17 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Tmux delivery sends the same formatted review.
 - [ ] Tmux delivery presses Enter.
 - [ ] Tmux failures do not lose comments.
+- [ ] Every non-empty review is archived before delivery.
+- [ ] Empty reviews are not archived.
+
+## Review Archive
+
+- [ ] Archive files are written under `$XDG_DATA_HOME/review/reviews` when `XDG_DATA_HOME` is set.
+- [ ] Archive files fall back to `~/.local/share/review/reviews` when `XDG_DATA_HOME` is unset.
+- [ ] Archive JSON includes `path`.
+- [ ] Archive JSON includes current `branch` or detached-head label.
+- [ ] Archive JSON includes exact `review_message`.
+- [ ] Each non-empty review creates a separate JSON file.
 
 ## Output Format
 
@@ -150,5 +172,6 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Manual branch review completed.
 - [ ] Manual stdout delivery completed.
 - [ ] Manual tmux delivery completed.
+- [ ] Manual archive verification completed.
 - [ ] Manual narrow-terminal check completed.
 - [ ] Manual large-file expansion check completed.

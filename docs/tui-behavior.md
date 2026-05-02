@@ -2,7 +2,9 @@
 
 ## Layout
 
-The terminal UI uses a two-pane vertical layout.
+The terminal UI opens in a review-first layout. The file pane is hidden by default and the review pane is focused.
+
+Pressing `T` shows the file pane. When the file pane is visible, the terminal UI uses a two-pane vertical layout.
 
 ```text
 +-----------------------------+------------------------------------------------+
@@ -18,7 +20,7 @@ The terminal UI uses a two-pane vertical layout.
 +------------------------------------------------------------------------------+
 ```
 
-The left file pane should use roughly 25-35% of the terminal width, with a sensible minimum width. The right review pane gets the remaining width.
+The left file pane should use roughly 25-35% of the terminal width, with a sensible minimum width. The right review pane gets the remaining width. When the file pane is hidden, the review pane uses the full terminal width.
 
 The layout must degrade gracefully in narrow terminals. If the terminal is too small for a usable two-pane view, the app should show a clear message.
 
@@ -28,7 +30,7 @@ Exactly one pane is focused at a time.
 
 Focused pane indicators may include border styling, title styling, cursor visibility, or selection color.
 
-`Tab` switches focus between the file pane and review pane.
+`Tab` switches focus between the file pane and review pane when the file pane is visible. When the file pane is hidden, `Tab` keeps focus in the review pane.
 
 Mouse click inside a pane focuses that pane.
 
@@ -54,6 +56,8 @@ Suggested markers:
 | Binary | `B` |
 
 The highlighted file is the file currently visible in the review pane or selected by the user.
+
+The file pane is not required to be visible for file synchronization to occur. When it is shown again, the highlighted file should match the active review selection or current scroll location.
 
 ## Review Pane
 
@@ -131,7 +135,10 @@ Required language coverage:
 - JSON,
 - properties,
 - YAML,
-- Markdown.
+- Markdown,
+- Nix,
+- gitignore-style ignore files,
+- JSON-compatible lock files.
 
 If highlighting fails for a file, display plain text instead of failing the review session.
 
@@ -144,6 +151,7 @@ Global keys:
 | `Tab` | Switch focused pane |
 | `T` | Show or hide the file pane |
 | `:` | Open command mode |
+| `Ctrl+C` | First press arms quit confirmation, second consecutive press quits |
 | `Esc` | Cancel current transient mode when applicable |
 
 File pane keys:
@@ -174,11 +182,11 @@ Comment input keys:
 
 | Key | Behavior |
 | --- | --- |
-| `Enter` | Insert newline or submit depending on chosen editor behavior |
-| `Ctrl+Enter` | Preferred submit shortcut if multi-line input uses plain Enter |
+| `Enter` | Submit comment |
+| `Ctrl+J` | Insert newline |
 | `Esc` | Cancel comment input |
 
-The final implementation must document the exact submit shortcut in user-facing help if it differs from plain `Enter`.
+When `Ctrl+J` inserts a newline at the end of the comment buffer, the newly created blank comment row should render immediately without waiting for another character.
 
 ## Mouse Behavior
 
@@ -270,6 +278,16 @@ Initial supported commands:
 Unknown commands should show a concise error and keep the user in the TUI.
 
 Command mode must be implemented as a dispatch table or equivalent extensible structure so future commands can be added cleanly.
+
+## Interrupt Behavior
+
+The initial review-source menu belongs to the startup flow and cancels with one `Ctrl+C`.
+
+After the source is selected, including inside the TUI, branch selection, and delivery selection, `Ctrl+C` requires confirmation:
+
+1. First `Ctrl+C` shows a warning.
+2. A second consecutive `Ctrl+C` exits.
+3. Any other key clears the pending interrupt.
 
 ## Quit And Delivery Transition
 

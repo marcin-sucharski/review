@@ -6,9 +6,9 @@ The implementation should keep terminal UI code separate from Git parsing, revie
 
 The most important rule is that behavior must be testable without launching a full terminal UI. The TUI should render and mutate a plain in-memory review model rather than owning the business logic.
 
-## Proposed Package Layout
+## Package Layout
 
-The exact package layout may change during implementation, but the recommended structure is:
+The implemented package layout is:
 
 ```text
 src/
@@ -16,24 +16,24 @@ src/
     __init__.py
     __main__.py
     cli.py
+    errors.py
     git.py
+    languages.py
     diff_model.py
     review_state.py
     format_review.py
+    archive.py
     tmux.py
     tui/
       __init__.py
       app.py
-      file_pane.py
-      review_pane.py
-      command_mode.py
-      comment_input.py
-      styles.py
+      file_tree.py
+      highlight.py
+      menu.py
 tests/
   unit/
   integration/
   tui/
-  fixtures/
 docs/
 ```
 
@@ -43,23 +43,27 @@ docs/
 
 `git.py` owns Git command execution and turns repository state into raw diff data.
 
+`errors.py` defines typed user-facing exceptions.
+
+`languages.py` maps file names and extensions to syntax/output languages.
+
 `diff_model.py` owns parsing raw diff data into structured files, hunks, line records, and expansion ranges.
 
 `review_state.py` owns the mutable review session state: focused pane, selected file, selected line range, expanded context, and saved comments.
 
 `format_review.py` turns saved comments and referenced context into the final feedback message.
 
+`archive.py` persists completed non-empty reviews as JSON under the XDG local data directory.
+
 `tmux.py` discovers panes and sends text to a selected pane.
 
-`tui/app.py` owns application composition and global key bindings.
+`tui/app.py` owns curses application composition, rendering, global key bindings, review-pane navigation, command mode, comment editing, and mouse handling. The current implementation keeps these TUI behaviors together while preserving pure review state and formatting outside curses.
 
-`tui/file_pane.py` renders and handles the modified-file tree.
+`tui/file_tree.py` builds the collapsed modified-file tree used by the file pane.
 
-`tui/review_pane.py` renders the continuous review document and handles scrolling, line selection, expansion, and inline comment anchors.
+`tui/highlight.py` wraps Pygments syntax highlighting and maps tokens to renderer roles.
 
-`tui/command_mode.py` owns `:` command entry and command dispatch.
-
-`tui/comment_input.py` owns inline comment editing.
+`tui/menu.py` owns compact inline terminal menus for startup, branch, and delivery selection.
 
 ## Core Data Flow
 
@@ -71,9 +75,10 @@ docs/
 6. TUI renders file pane and review pane from review state.
 7. User navigates, expands context, and adds comments.
 8. Quit command exits TUI and returns saved comments.
-9. CLI asks for delivery target.
-10. Formatter creates final review message.
-11. Delivery writes to tmux pane or stdout.
+9. Formatter creates final review message.
+10. If the review has comments, CLI writes a JSON archive.
+11. CLI asks for delivery target.
+12. Delivery writes to tmux pane or stdout.
 
 ## Core Domain Objects
 
@@ -146,6 +151,18 @@ Fields:
 
 Comments should anchor to new-side line numbers for added and context lines. Deleted-line comments need a clear policy because they do not have new-side line numbers. The preferred policy is to allow deleted-line comments and label them as old-side lines in output.
 
+### ReviewArchive
+
+Represents the persisted record for one completed non-empty review.
+
+Fields:
+
+- `path`: absolute repository path where the review occurred.
+- `branch`: current Git branch, or a detached-head label if not on a branch.
+- `review_message`: exact generated message used for stdout or tmux delivery.
+
+Archive files live under `$XDG_DATA_HOME/review/reviews` with a `~/.local/share/review/reviews` fallback. The filename should be unique and stable enough to avoid collisions, typically using a UTC timestamp plus random suffix.
+
 ## Diff Representation
 
 The review pane should be a unified, continuous document made of file sections.
@@ -167,6 +184,7 @@ Use a mature syntax highlighting library rather than implementing lexers manuall
 The highlighter must support at least:
 
 - Java,
+- Python,
 - JavaScript,
 - TypeScript,
 - CSS,
@@ -176,7 +194,11 @@ The highlighter must support at least:
 - XML,
 - JSON,
 - properties,
-- YAML.
+- YAML,
+- Markdown,
+- Nix,
+- gitignore-style ignore files,
+- JSON-compatible lock files.
 
 Language detection should use file extension first, then filename, then fallback to plain text.
 
@@ -185,6 +207,7 @@ Recommended extension mapping:
 | Extension | Language |
 | --- | --- |
 | `.java` | Java |
+| `.py`, `.pyi` | Python |
 | `.js`, `.mjs`, `.cjs` | JavaScript |
 | `.ts` | TypeScript |
 | `.tsx` | TSX or JSX-capable TypeScript |
@@ -196,6 +219,10 @@ Recommended extension mapping:
 | `.json` | JSON |
 | `.properties` | Java properties |
 | `.yml`, `.yaml` | YAML |
+| `.md`, `.markdown` | Markdown |
+| `.nix` | Nix |
+| `.lock` | JSON |
+| `.gitignore`, `.ignore`, `.dockerignore` | gitignore |
 
 ## State Management
 
@@ -260,6 +287,8 @@ The tool should feel responsive for normal review sizes:
 - up to 200 changed files,
 - up to 20,000 visible lines after expansion,
 - comments added interactively without noticeable delay.
+
+Comment input redraw is a hot path. Rendering should avoid rebuilding selection ranges, comment ranges, or file trees for every visible row on every typed character.
 
 Large repositories and very large generated files should be handled gracefully by truncation, binary detection, or warnings.
 

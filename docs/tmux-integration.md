@@ -6,6 +6,8 @@ At the end of a review, the tool can send the formatted review comments to a sel
 
 This supports workflows where a coding agent is running in another pane and expects feedback as terminal input.
 
+Before tmux delivery is attempted, every non-empty review is saved to the local JSON archive. Delivery failure must not be able to destroy the only copy of the comments.
+
 ## Availability Detection
 
 The tmux integration should first determine whether tmux is available:
@@ -37,6 +39,8 @@ The parsed pane model should include:
 
 The selection UI should display enough information for the user to avoid sending feedback to the wrong pane.
 
+Because delivery happens after the user has already written comments, the delivery target menu requires two consecutive `Ctrl+C` presses to cancel.
+
 Example display:
 
 ```text
@@ -64,6 +68,8 @@ No tmux pane - print to stdout
 This option is required even when tmux is available.
 
 If tmux is unavailable or no panes are found, stdout should be offered automatically.
+
+Choosing stdout still writes the local JSON archive first when the review contains comments.
 
 ## Sending Text
 
@@ -124,9 +130,10 @@ Real tmux tests should be skipped automatically when tmux is missing or when the
 3. Run `review` in the other pane.
 4. Add one or more comments.
 5. Quit with `:q`.
-6. Select the target pane.
-7. Verify that the full review text appears in the target pane.
-8. Verify that Enter is sent.
+6. Verify that a JSON archive was written under the XDG data directory.
+7. Select the target pane.
+8. Verify that the full review text appears in the target pane.
+9. Verify that Enter is sent.
 
 ## Security Considerations
 

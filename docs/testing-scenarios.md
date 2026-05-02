@@ -39,7 +39,11 @@ Fixture files should cover required languages:
 - `config/app.xml`,
 - `config/data.json`,
 - `config/application.properties`,
-- `config/settings.yaml`.
+- `config/settings.yaml`,
+- `docs/notes.md`,
+- `flake.nix`,
+- `flake.lock`,
+- `.gitignore`.
 
 ## CLI Startup Tests
 
@@ -55,7 +59,7 @@ Fixture files should cover required languages:
 | User selects branch comparison | Compares merge base to `HEAD` |
 | Branch comparison target does not exist | Friendly error |
 | Git command fails | Friendly error without raw traceback |
-| User cancels startup prompt | Exits cleanly |
+| User presses `Ctrl+C` in startup review-source prompt | Exits cleanly on first press |
 
 ## Branch Selection Tests
 
@@ -125,6 +129,10 @@ Fixture files should cover required languages:
 | `data.json` | JSON |
 | `application.properties` | Java properties or properties lexer |
 | `settings.yaml` | YAML |
+| `notes.md` | Markdown |
+| `flake.nix` | Nix |
+| `flake.lock` | JSON |
+| `.gitignore` | gitignore-style highlighting |
 | `unknown.xyz` | Plain text fallback |
 | Extensionless file | Plain text or content-detected lexer |
 | Invalid syntax file | Still renders without crash |
@@ -155,10 +163,10 @@ Fixture files should cover required languages:
 
 | Scenario | Expected Result |
 | --- | --- |
-| TUI starts with changes | Two panes visible |
-| File pane focused initially | Focus indicator visible |
-| Press `Tab` | Focus moves to review pane |
-| Press `Tab` again | Focus returns to file pane |
+| TUI starts with changes | Review pane visible with file pane hidden by default |
+| Press `T` from initial view | File pane appears |
+| File pane shown | Collapsed directory tree is visible |
+| Press `Tab` with file pane visible | Focus moves between file and review panes |
 | Select file in file pane | Review pane scrolls to file |
 | Scroll review pane | File pane highlight updates |
 | Long file scrolls | Sticky header shows current file |
@@ -185,11 +193,16 @@ Fixture files should cover required languages:
 | Review pane `Enter` on code | Comment input opens |
 | Review pane `Enter` on expansion row | Context expands |
 | `Esc` in comment input | Input cancels |
+| `Ctrl+J` in comment input | Inserts newline and blank row renders immediately |
+| `Enter` in comment input | Saves comment |
 | Submit comment | Comment appears inline |
 | Press `:` | Command mode opens |
 | Command `q` | Starts quit flow |
 | Command `quit` | Starts quit flow |
 | Unknown command | Shows error, stays in TUI |
+| First `Ctrl+C` in TUI | Warning is shown and TUI remains open |
+| Second consecutive `Ctrl+C` in TUI | TUI exits |
+| Other key after first `Ctrl+C` | Pending interrupt is cleared |
 
 ## Mouse Interaction Tests
 
@@ -235,6 +248,19 @@ Fixture files should cover required languages:
 | Branch comparison source | Target branch included |
 | Uncommitted source | Source labeled as uncommitted changes |
 
+## Review Archive Tests
+
+| Scenario | Expected Result |
+| --- | --- |
+| Non-empty review delivered to stdout | One JSON archive file is written |
+| Non-empty review delivered to tmux | One JSON archive file is written before send |
+| Empty review | No archive file is written |
+| `XDG_DATA_HOME` is set | Archive goes to `$XDG_DATA_HOME/review/reviews` |
+| `XDG_DATA_HOME` is unset | Archive goes to `~/.local/share/review/reviews` |
+| Current branch is available | JSON `branch` equals branch name |
+| Detached HEAD | JSON `branch` uses detached short-sha label |
+| Archive payload | Contains `path`, `branch`, and exact `review_message` |
+
 ## Tmux Unit Tests
 
 | Scenario | Expected Result |
@@ -272,10 +298,13 @@ These tests should run only when tmux is available.
 3. Modify JavaScript, CSS, JSON, and YAML files.
 4. Run `review`.
 5. Select uncommitted changes.
-6. Add single-line and multi-line comments.
-7. Quit with `:q`.
-8. Select no tmux pane.
-9. Verify stdout contains grouped comments with line references and context.
+6. Verify the file pane is hidden by default.
+7. Press `T` and verify the file tree appears.
+8. Add single-line and multi-line comments.
+9. Quit with `:q`.
+10. Select no tmux pane.
+11. Verify stdout contains grouped comments with line references and context.
+12. Verify a review JSON archive was written and contains the same review message.
 
 ### Scenario 2: Branch Review To Tmux Pane
 
@@ -288,8 +317,9 @@ These tests should run only when tmux is available.
 7. Select branch comparison against `main`.
 8. Add comments.
 9. Quit with `:q`.
-10. Select the other pane.
-11. Verify review feedback appears in the target pane and Enter is sent.
+10. Verify a review JSON archive was written.
+11. Select the other pane.
+12. Verify review feedback appears in the target pane and Enter is sent.
 
 ### Scenario 3: Expansion And Sticky Header
 
@@ -320,6 +350,18 @@ These tests should run only when tmux is available.
 6. Add comments where supported.
 7. Verify output labels the references correctly.
 
+### Scenario 6: Interrupt Behavior
+
+1. Start `review` and leave it on the review-source prompt.
+2. Press `Ctrl+C`.
+3. Verify the program exits with cancellation.
+4. Start `review --source uncommitted`.
+5. Press `Ctrl+C` inside the TUI.
+6. Verify the warning appears and the TUI remains open.
+7. Press a non-`Ctrl+C` key and verify the warning clears.
+8. Press `Ctrl+C` twice consecutively.
+9. Verify the TUI exits.
+
 ## Regression Test Checklist
 
 Before considering implementation complete, run:
@@ -334,6 +376,7 @@ Before considering implementation complete, run:
 - manual branch review,
 - manual stdout delivery,
 - manual tmux delivery.
+- manual archive verification.
 
 ## Coverage Expectations
 
@@ -348,5 +391,6 @@ The test suite should cover:
 - output formatting edge cases,
 - tmux success and failure paths,
 - startup and graceful error paths.
+- local review archive behavior.
 
 High line coverage alone is not enough. The important measure is behavioral coverage of the review workflow.

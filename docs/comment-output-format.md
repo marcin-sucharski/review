@@ -6,6 +6,8 @@ The output format is designed for coding agents. It must be concise, structured,
 
 The exact formatting can evolve, but stdout delivery and tmux delivery must use the same generated message.
 
+The same generated message must also be written to the local review archive for every non-empty review.
+
 ## Required Content
 
 Each review message must include:
@@ -76,7 +78,7 @@ New lines: 42-44
 
 ## Context Lines
 
-The selected code lines are included exactly as reviewed.
+The selected code lines are included with nearby context. By default, the formatter includes two lines before and two lines after the commented range when those lines exist.
 
 Each context line should include:
 
@@ -138,6 +140,38 @@ No review comments.
 
 Tmux delivery should not send an empty message unless the user explicitly confirms.
 
+Empty reviews are not archived.
+
+## Local Review Archive
+
+Every non-empty review is saved as one JSON file before stdout or tmux delivery.
+
+Archive directory:
+
+```text
+$XDG_DATA_HOME/review/reviews
+```
+
+Fallback when `XDG_DATA_HOME` is unset:
+
+```text
+~/.local/share/review/reviews
+```
+
+Required JSON shape:
+
+```json
+{
+  "path": "/absolute/path/to/repository",
+  "branch": "feature/review",
+  "review_message": "Review comments for /absolute/path/to/repository\n..."
+}
+```
+
+`review_message` must be byte-for-byte the same text sent to tmux or printed to stdout for that review.
+
+For detached HEAD, `branch` may use a stable descriptive value such as `detached:<short-sha>`.
+
 ## Escaping And Safety
 
 The formatter must handle:
@@ -186,3 +220,5 @@ The output should be deterministic for tests:
 - stable heading text,
 - no timestamps unless explicitly requested,
 - normalized newlines.
+
+The archive filename may include a timestamp and random suffix. The timestamp belongs to the filename, not the deterministic review message.

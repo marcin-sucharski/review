@@ -41,6 +41,8 @@ If Git commands fail, the CLI displays the failing operation and a concise expla
 
 When interactive source, branch, or delivery choices are needed, the CLI should render a compact inline menu using only a few terminal lines. Selection uses `Up`, `Down`, and `Enter`; the menu must avoid full-screen dark-background presentation so it remains readable in light terminals.
 
+In the initial review-source menu, one `Ctrl+C` cancels the program. After that first source choice is accepted, cancellation is intentionally harder: branch selection, delivery selection, and the TUI require two consecutive `Ctrl+C` presses before exiting.
+
 For branch comparison, the CLI must present or accept a target branch. The default branch detection should prefer the repository's configured upstream/default branch when available, then fall back to common branch names such as `main` and `master`.
 
 ## Review Sources
@@ -74,7 +76,9 @@ The UI should describe this as PR-style comparison because it mirrors the usual 
 
 ## TUI Layout
 
-The TUI has two vertical panes.
+The TUI opens with the review pane focused and the file pane hidden by default.
+
+Pressing `T` shows or hides the file pane. When the file pane is visible, the TUI has two vertical panes.
 
 The left file pane lists modified files as a tree with collapsed directory chains when no modified file exists between the directories.
 
@@ -114,13 +118,16 @@ Supported syntax highlighting must include at least:
 - JSON,
 - `.properties`,
 - YAML,
-- Markdown.
+- Markdown,
+- Nix,
+- `.gitignore`-style ignore files,
+- JSON-compatible lock files such as `package-lock.json` and `flake.lock`.
 
 Unknown file types should still display as plain text.
 
 ## Navigation
 
-`Tab` moves focus between the file pane and review pane. `T` toggles the file pane between visible and hidden.
+`Tab` moves focus between the file pane and review pane when the file pane is visible. `T` toggles the file pane between visible and hidden. When the file pane is hidden, focus remains in the review pane.
 
 In the file pane:
 
@@ -150,7 +157,9 @@ The comment input behaves like a GitHub-style line comment:
 
 - it is visually attached to the referenced line or range,
 - it supports multi-line text,
-- it can be submitted or canceled,
+- `Ctrl+J` inserts a newline and the blank line appears immediately,
+- `Enter` submits the comment,
+- `Esc` cancels the comment,
 - the saved comment appears inline below the referenced range.
 
 Saved comments live in memory for the duration of the session.
@@ -192,10 +201,20 @@ The command parser should be extensible. Initial supported commands:
 
 - `q`
 - `quit`
+- `q!`
+- `quit!`
+- `e`
+- `edit`
+- `edit-comment`
+- `d`
+- `delete`
+- `delete-comment`
 
 If unsent comments exist, quitting proceeds to delivery target selection.
 
-If no comments exist, the tool may confirm exit or simply exit depending on final UX choice. The preferred behavior is to ask whether to exit without comments.
+If no comments exist, the TUI exits immediately without confirmation and the CLI prints the empty-review message when using stdout/no-TUI paths.
+
+Inside the TUI, `Ctrl+C` is not a single-key quit. The first press shows a warning, and only a second consecutive `Ctrl+C` exits. Any other key clears the pending interrupt.
 
 ## Delivery
 
@@ -214,6 +233,24 @@ Tmux pane choices must include:
 When a tmux pane is selected, the tool sends the full review message and presses Enter.
 
 When no pane is selected, the same review message is printed to stdout and the process exits.
+
+Every non-empty review is saved before delivery, regardless of whether the user chooses tmux or stdout. The archive is a JSON file in:
+
+```text
+$XDG_DATA_HOME/review/reviews
+```
+
+If `XDG_DATA_HOME` is unset, the fallback directory is:
+
+```text
+~/.local/share/review/reviews
+```
+
+Each archive file contains:
+
+- `path`: repository path where the review occurred,
+- `branch`: current Git branch, or a detached-head label when applicable,
+- `review_message`: the exact generated review text used for tmux/stdout delivery.
 
 ## Accessibility And Usability
 
@@ -246,13 +283,15 @@ The tool must handle:
 
 Failures should be reported clearly without tracebacks unless debug mode is enabled.
 
+If tmux delivery fails after comments have been written, the archived JSON must still exist so the review is not lost.
+
 ## Acceptance Criteria
 
 The initial version is complete when:
 
 - `review` starts from a Git repository and prompts for review source,
 - both review sources work,
-- changed files render in a two-pane TUI,
+- changed files render in a review-first TUI with a toggleable file pane,
 - file selection and review scrolling stay synchronized,
 - syntax highlighting works for the required file types,
 - keyboard and mouse navigation work,
@@ -261,5 +300,6 @@ The initial version is complete when:
 - `:q` exits into delivery target selection,
 - tmux delivery sends the formatted review and Enter,
 - stdout delivery prints the same formatted review,
+- non-empty reviews are archived as JSON before delivery,
 - automated tests cover core behavior,
 - manual tmux verification has been run.
