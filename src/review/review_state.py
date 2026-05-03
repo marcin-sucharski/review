@@ -423,6 +423,19 @@ class ReviewState:
             return None
         return min(self.anchor_row, self.active_row), max(self.anchor_row, self.active_row)
 
+    def collapse_selection_to_active_row(self) -> bool:
+        if self.selection_kind != "code" or self.active_row is None:
+            return False
+        if self.anchor_row is None:
+            self.anchor_row = self.active_row
+            self.selected_row = self.active_row
+            return False
+        if self.anchor_row == self.active_row:
+            return False
+        self.anchor_row = self.active_row
+        self.selected_row = self.active_row
+        return True
+
     def is_row_in_selection(self, file_path: str, row_index: int) -> bool:
         if file_path != self.selected_file_path:
             return False

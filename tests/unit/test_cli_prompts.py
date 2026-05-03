@@ -7,7 +7,7 @@ from unittest import mock
 from review import cli
 from review.diff_model import ReviewSource, create_review_file
 from review.tmux import TmuxPane
-from review.tui.menu import MenuOption, _decode_key, _read_key, _render_menu_lines
+from review.tui.menu import MenuOption, _clear_rendered_menu, _decode_key, _read_key, _render_menu_lines, _select_option_inline
 
 
 class CliPromptTests(unittest.TestCase):
@@ -77,6 +77,38 @@ class CliPromptTests(unittest.TestCase):
         self.assertIn("> Review PR-style changes", lines[2])
         self.assertNotIn("\x1b[7m", "\n".join(lines))
 
+    def test_inline_menu_clear_erases_rendered_lines(self):
+        output = io.StringIO()
+
+        _clear_rendered_menu(output, 3)
+
+        self.assertEqual(output.getvalue(), "\x1b[3F\r\x1b[2K\x1b[1E\r\x1b[2K\x1b[1E\r\x1b[2K\x1b[2F")
+
+    def test_inline_menu_clears_before_returning_selection(self):
+        class FakeInput(io.StringIO):
+            def fileno(self):
+                return 42
+
+        output = io.StringIO()
+        with (
+            mock.patch("review.tui.menu.termios.tcgetattr", return_value="settings"),
+            mock.patch("review.tui.menu.termios.tcsetattr"),
+            mock.patch("review.tui.menu.tty.setraw"),
+            mock.patch("review.tui.menu._read_key", return_value="enter"),
+        ):
+            choice = _select_option_inline(
+                "Review source",
+                [MenuOption("Review uncommitted changes", "uncommitted")],
+                0,
+                FakeInput(),
+                output,
+                False,
+            )
+
+        self.assertEqual(choice, "uncommitted")
+        self.assertIn("\x1b[2K", output.getvalue())
+        self.assertTrue(output.getvalue().endswith("\x1b[1F"))
+
     def test_menu_decodes_arrow_escape_sequences_without_cancelling(self):
         self.assertEqual(_decode_key(b"\x1b[B"), "down")
         self.assertEqual(_decode_key(b"\x1bOB"), "down")
@@ -112,6 +144,70 @@ class CliPromptTests(unittest.TestCase):
 
         archive_review.assert_called_once()
         self.assertIn("Needs work.", stdout.getvalue())
+
+    def test_main_archive_failure_does_not_block_stdout_delivery(self):
+        file = create_review_file("app.py", "modified", ["old"], ["new"])
+
+        class TtyStringIO(io.StringIO):
+            def isatty(self):
+                return True
+
+        class FakeReviewApp:
+            def __init__(self, state):
+                self.state = state
+
+            def run(self):
+                self.state.add_comment("Needs work.")
+                return self.state
+
+        stdout = TtyStringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(cli, "repository_root", return_value=Path("/repo")),
+            mock.patch.object(cli, "collect_uncommitted", return_value=(ReviewSource("uncommitted"), [file])),
+            mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
+            mock.patch.object(cli.sys, "stdout", stdout),
+            mock.patch.object(cli.sys, "stderr", stderr),
+            mock.patch.object(cli, "ReviewApp", FakeReviewApp),
+            mock.patch.object(cli, "archive_review", side_effect=OSError("disk full")),
+        ):
+            self.assertEqual(cli.main(["--source", "uncommitted", "--stdout"]), 0)
+
+        self.assertIn("Needs work.", stdout.getvalue())
+        self.assertIn("could not archive review", stderr.getvalue())
+        self.assertIn("disk full", stderr.getvalue())
+
+    def test_main_archive_failure_does_not_block_tmux_delivery(self):
+        file = create_review_file("app.py", "modified", ["old"], ["new"])
+
+        class TtyStringIO(io.StringIO):
+            def isatty(self):
+                return True
+
+        class FakeReviewApp:
+            def __init__(self, state):
+                self.state = state
+
+            def run(self):
+                self.state.add_comment("Needs work.")
+                return self.state
+
+        stdout = TtyStringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(cli, "repository_root", return_value=Path("/repo")),
+            mock.patch.object(cli, "collect_uncommitted", return_value=(ReviewSource("uncommitted"), [file])),
+            mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
+            mock.patch.object(cli.sys, "stdout", stdout),
+            mock.patch.object(cli.sys, "stderr", stderr),
+            mock.patch.object(cli, "ReviewApp", FakeReviewApp),
+            mock.patch.object(cli, "archive_review", side_effect=OSError("read-only file system")),
+            mock.patch.object(cli, "deliver_review", return_value=0) as deliver_review,
+        ):
+            self.assertEqual(cli.main(["--source", "uncommitted"]), 0)
+
+        deliver_review.assert_called_once()
+        self.assertIn("read-only file system", stderr.getvalue())
 
     def test_menu_read_key_waits_for_complete_application_arrow_sequence(self):
         read_fd, write_fd = os.pipe()

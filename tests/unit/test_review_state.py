@@ -36,6 +36,19 @@ class ReviewStateTests(unittest.TestCase):
         items = state.document_items()
         self.assertTrue(any(item.kind == "comment" for item in items))
 
+    def test_collapse_selection_to_active_row_cancels_multiline_range(self):
+        state = make_state()
+        state.extend_selection(1)
+        self.assertNotEqual(state.anchor_row, state.active_row)
+
+        active_row = state.active_row
+        self.assertTrue(state.collapse_selection_to_active_row())
+
+        self.assertEqual(state.anchor_row, active_row)
+        self.assertEqual(state.active_row, active_row)
+        self.assertEqual(state.selected_range(), (active_row, active_row))
+        self.assertFalse(state.collapse_selection_to_active_row())
+
     def test_expansion_rows_reveal_context(self):
         old = [f"line {index}" for index in range(260)]
         new = old.copy()

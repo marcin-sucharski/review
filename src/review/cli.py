@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
 
         message = format_review(state)
         if state.comments:
-            archive_review(state, message)
+            archive_review_best_effort(state, message)
         if args.stdout:
             sys.stdout.write(message)
             return 0
@@ -70,6 +70,13 @@ def main(argv: list[str] | None = None) -> int:
     except (NotAGitRepository, ReviewError) as exc:
         sys.stderr.write(f"review: {exc}\n")
         return 1
+
+
+def archive_review_best_effort(state: ReviewState, message: str) -> None:
+    try:
+        archive_review(state, message)
+    except (OSError, GitCommandError) as exc:
+        sys.stderr.write(f"review: could not archive review: {exc}\n")
 
 
 def prompt_source() -> str:

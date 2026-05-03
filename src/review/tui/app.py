@@ -24,6 +24,7 @@ BOLD_ROLES = {"keyword", "tag", "heading", "error", "rail", "emphasis"}
 BACKGROUND_COLORS = {
     "addition": (194, curses.COLOR_GREEN),
     "deletion": (224, curses.COLOR_RED),
+    "comment": (230, curses.COLOR_YELLOW),
     "selection": (153, curses.COLOR_CYAN),
 }
 FOREGROUND_WITH_BACKGROUND = {
@@ -44,6 +45,7 @@ FOREGROUND_WITH_BACKGROUND = {
     "heading": curses.COLOR_MAGENTA,
     "emphasis": curses.COLOR_BLUE,
     "operator": curses.COLOR_BLACK,
+    "warning": curses.COLOR_BLACK,
     "error": curses.COLOR_RED,
 }
 FOREGROUND_DEFAULT = {
@@ -381,7 +383,9 @@ class ReviewApp:
     def _draw_comment(self, stdscr, y: int, x: int, width: int, text: str, *, saved: bool, selected: bool = False) -> int:
         lines = _comment_display_lines(text)
         modifiers = curses.A_UNDERLINE if selected else curses.A_NORMAL
-        attr = self._style("warning", "selection" if selected else None, modifiers) | (curses.A_BOLD if not saved else curses.A_NORMAL)
+        background = self._comment_background(saved, selected)
+        attr = self._style("warning", background, modifiers) | (curses.A_BOLD if not saved else curses.A_NORMAL)
+        row_attr = self._style("plain", background, modifiers)
         used = 0
         for line in lines:
             if y + used >= self.content_height:
@@ -390,13 +394,21 @@ class ReviewApp:
             for chunk in chunks:
                 if y + used >= self.content_height:
                     break
-                self._draw_comment_gutter(stdscr, y + used, x, selected=selected)
+                self._safe_addnstr(stdscr, y + used, x, " " * max(0, width - 1), width - 1, row_attr)
+                self._draw_comment_gutter(stdscr, y + used, x, background=background, selected=selected)
                 self._safe_addnstr(stdscr, y + used, x + GUTTER_WIDTH, chunk, width - GUTTER_WIDTH - 1, attr)
                 used += 1
         return max(1, used)
 
-    def _draw_comment_gutter(self, stdscr, y: int, x: int, *, selected: bool = False) -> None:
-        background = "selection" if selected else None
+    @staticmethod
+    def _comment_background(saved: bool, selected: bool) -> str | None:
+        if selected:
+            return "selection"
+        if saved:
+            return "comment"
+        return None
+
+    def _draw_comment_gutter(self, stdscr, y: int, x: int, *, background: str | None = None, selected: bool = False) -> None:
         modifiers = curses.A_UNDERLINE if selected else curses.A_NORMAL
         self._draw_gutter(stdscr, y, x, "    ", " ", True, background, modifiers)
 
@@ -480,6 +492,10 @@ class ReviewApp:
         if key in ("z", ord("z")):
             self._center_review_on_selection()
             return True
+        if _is_escape(key):
+            if self.state.collapse_selection_to_active_row():
+                self.status_message = "Selection cleared."
+                return True
         if key == curses.KEY_MOUSE:
             self._handle_mouse()
             return True
@@ -544,7 +560,7 @@ class ReviewApp:
             self._keep_selection_in_editor_view()
 
     def _handle_command_key(self, key: int | str) -> None:
-        if key in (27, "\x1b"):
+        if _is_escape(key):
             self.command_mode = False
             return
         if _is_backspace(key):
@@ -567,7 +583,7 @@ class ReviewApp:
             self.status_message = f"Unknown command: {command}"
 
     def _handle_comment_key(self, key: int | str) -> None:
-        if key in (27, "\x1b"):
+        if _is_escape(key):
             self._close_comment_input()
             return
         if _is_backspace(key):
@@ -961,6 +977,10 @@ def _is_comment_newline(key: int | str) -> bool:
 
 def _is_ctrl_c(key: int | str) -> bool:
     return key in (3, "\x03")
+
+
+def _is_escape(key: int | str) -> bool:
+    return key in (27, "\x1b")
 
 
 def _is_backspace(key: int | str) -> bool:

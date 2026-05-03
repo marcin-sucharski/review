@@ -80,18 +80,36 @@ def _select_option_inline(
                 selected = len(options) - 1
                 cancel_armed = False
             elif key == "enter":
+                _clear_rendered_menu(output_stream, printed_lines)
                 return options[selected].value
             elif key == "ctrl_c":
                 if cancel_requires_double and not cancel_armed:
                     cancel_armed = True
                 else:
+                    _clear_rendered_menu(output_stream, printed_lines)
                     raise KeyboardInterrupt
             elif key == "escape":
+                _clear_rendered_menu(output_stream, printed_lines)
                 raise KeyboardInterrupt
             else:
                 cancel_armed = False
         finally:
             termios.tcsetattr(input_fd, termios.TCSADRAIN, old_settings)
+
+
+def _clear_rendered_menu(output_stream: TextIO, line_count: int) -> None:
+    if line_count <= 0:
+        return
+    output_stream.write(f"\x1b[{line_count}F")
+    for index in range(line_count):
+        output_stream.write("\r\x1b[2K")
+        if index < line_count - 1:
+            output_stream.write("\x1b[1E")
+    if line_count > 1:
+        output_stream.write(f"\x1b[{line_count - 1}F")
+    else:
+        output_stream.write("\r")
+    output_stream.flush()
 
 
 def _select_option_text(title: str, options: list[MenuOption], default_index: int, cancel_requires_double: bool) -> str:

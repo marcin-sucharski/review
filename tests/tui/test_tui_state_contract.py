@@ -231,6 +231,18 @@ class TuiStateContractTests(unittest.TestCase):
             app._handle_mouse()
         self.assertEqual(state.selected_range(), (0, 3))
 
+    def test_escape_cancels_multiline_selection(self):
+        file = create_review_file("src/app.js", "modified", ["a", "b"], ["A", "B"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        app = ReviewApp(state)
+        state.extend_selection(1)
+
+        active_row = state.active_row
+        app._handle_key("\x1b")
+
+        self.assertEqual(state.selected_range(), (active_row, active_row))
+        self.assertEqual(app.status_message, "Selection cleared.")
+
     def test_syntax_renderer_preserves_selection_attr_on_code_body(self):
         class FakeScreen:
             def __init__(self):
@@ -434,6 +446,33 @@ class TuiStateContractTests(unittest.TestCase):
         self.assertIn("Only the comment body.", rendered)
         self.assertNotIn("comment on", rendered)
         self.assertTrue(any(x == 5 and text == "|" for _, x, text in screen.calls))
+
+    def test_saved_comment_rows_use_distinct_background(self):
+        class FakeScreen:
+            def addnstr(self, y, x, text, n, attr):
+                return None
+
+        file = create_review_file("plain.txt", "modified", ["a"], ["A"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        state.add_comment("Visible comment.")
+        app = ReviewApp(state)
+        app.content_height = 20
+        comment_item = next(item for item in state.document_items() if item.kind == "comment")
+        styles = []
+
+        def fake_style(role, background=None, modifiers=curses.A_NORMAL):
+            styles.append((role, background, modifiers))
+            return curses.A_NORMAL
+
+        with mock.patch.object(app, "_style", side_effect=fake_style):
+            app._draw_review_item(FakeScreen(), 0, 0, 80, comment_item, 0, False)
+
+        self.assertIn(("plain", "comment", curses.A_NORMAL), styles)
+        self.assertIn(("warning", "comment", curses.A_NORMAL), styles)
+        self.assertIn(("rail", "comment", curses.A_NORMAL), styles)
+        self.assertNotEqual(app._background_color("comment"), app._background_color("addition"))
+        self.assertNotEqual(app._background_color("comment"), app._background_color("deletion"))
+        self.assertNotEqual(app._background_color("comment"), app._background_color("selection"))
 
     def test_anchor_and_active_rows_have_distinct_selection_attrs(self):
         class FakeScreen:
