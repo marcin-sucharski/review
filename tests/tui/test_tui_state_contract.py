@@ -317,6 +317,28 @@ class TuiStateContractTests(unittest.TestCase):
         self.assertEqual(app.comment_buffer, "bc")
         self.assertEqual(app.comment_cursor_index, 0)
 
+    def test_comment_input_ctrl_w_deletes_previous_word(self):
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+        app.comment_buffer = "one two   "
+        app.comment_cursor_index = len(app.comment_buffer)
+
+        app._handle_comment_key("\x17")
+
+        self.assertEqual(app.comment_buffer, "one ")
+        self.assertEqual(app.comment_cursor_index, len("one "))
+
+    def test_comment_input_ctrl_w_deletes_word_before_cursor_without_touching_suffix(self):
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+        app.comment_buffer = "one two three"
+        app.comment_cursor_index = len("one two")
+
+        app._handle_comment_key(23)
+
+        self.assertEqual(app.comment_buffer, "one  three")
+        self.assertEqual(app.comment_cursor_index, len("one "))
+
     def test_comment_input_trailing_newline_draws_blank_line_immediately(self):
         class FakeScreen:
             def __init__(self):

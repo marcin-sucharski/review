@@ -215,6 +215,7 @@ Fixture files should cover required languages:
 | `Ctrl+A` in comment input | First press moves to current line start, second press moves to message start |
 | `Ctrl+E` in comment input | First press moves to current line end, second press moves to message end |
 | `Option+Left`/`Option+Right` in comment input | Cursor moves by word for supported terminal escape sequences |
+| `Ctrl+W` in comment input | Deletes the word before the cursor without removing text after the cursor |
 | `Alt`/`Meta` left/right in a real tmux TUI session | Cursor x-position moves by word and inserted text lands at the word-moved cursor |
 | `Enter` in comment input | Saves comment |
 | Submit comment | Comment appears inline |

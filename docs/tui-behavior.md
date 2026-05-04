@@ -208,13 +208,14 @@ Comment input keys:
 | `Ctrl+A` | Move to the beginning of the current line, or to the beginning of the message if already at line start |
 | `Ctrl+E` | Move to the end of the current line, or to the end of the message if already at line end |
 | `Option+Left` / `Option+Right` | Move the comment cursor by word where the terminal sends a supported Meta or modified-arrow sequence |
+| `Ctrl+W` | Delete the word before the comment cursor |
 | `Esc` | Cancel comment input |
 
 When `Ctrl+J` inserts a newline at the end of the comment buffer, the newly created blank comment row should render immediately without waiting for another character.
 
 While a comment input or edit is active, the terminal cursor should be visible at the current insertion point, including on newly inserted multiline rows.
 
-Comment input should behave like a small multiline editor: typed text inserts at the cursor, Backspace removes the character before the cursor, line-boundary movement follows common shell/editor bindings, word movement crosses whitespace and punctuation, and vertical movement preserves the intended column when moving across shorter or longer lines.
+Comment input should behave like a small multiline editor: typed text inserts at the cursor, Backspace removes the character before the cursor, `Ctrl+W` removes the word before the cursor, line-boundary movement follows common shell/editor bindings, word movement crosses whitespace and punctuation, and vertical movement preserves the intended column when moving across shorter or longer lines.
 
 While editing a comment message, `j` and `k` are inserted as normal text rather than treated as navigation keys.
 

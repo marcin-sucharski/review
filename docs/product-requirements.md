@@ -181,6 +181,7 @@ The comment input behaves like a GitHub-style line comment:
 - `Up` and `Down` move the insertion cursor between comment lines while preserving the intended column,
 - `Ctrl+A` and `Ctrl+E` move to the current line boundary, or the whole-message boundary when already at that line boundary,
 - `Option+Left` and `Option+Right` move by word for terminals that send supported Meta or modified-arrow sequences,
+- `Ctrl+W` deletes the word before the insertion cursor,
 - typed text and Backspace edit at the current insertion cursor,
 - `Enter` submits the comment,
 - `Esc` cancels the comment,

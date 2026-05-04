@@ -841,6 +841,9 @@ class ReviewApp:
         if _is_comment_word_right_key(key):
             self._move_comment_cursor_word(1)
             return
+        if _is_comment_word_delete_key(key):
+            self._delete_comment_word_before_cursor()
+            return
         if _is_escape(key):
             self._close_comment_input()
             return
@@ -884,6 +887,15 @@ class ReviewApp:
             return
         self.comment_buffer = self.comment_buffer[: self.comment_cursor_index - 1] + self.comment_buffer[self.comment_cursor_index :]
         self.comment_cursor_index -= 1
+        self.comment_cursor_goal_column = None
+
+    def _delete_comment_word_before_cursor(self) -> None:
+        self.comment_cursor_index = max(0, min(len(self.comment_buffer), self.comment_cursor_index))
+        if self.comment_cursor_index == 0:
+            return
+        start = _previous_comment_word_index(self.comment_buffer, self.comment_cursor_index)
+        self.comment_buffer = self.comment_buffer[:start] + self.comment_buffer[self.comment_cursor_index :]
+        self.comment_cursor_index = start
         self.comment_cursor_goal_column = None
 
     def _move_comment_cursor_horizontal(self, delta: int) -> None:
@@ -1391,6 +1403,10 @@ def _is_comment_word_left_key(key: int | str) -> bool:
 
 def _is_comment_word_right_key(key: int | str) -> bool:
     return key in (COMMENT_WORD_RIGHT_KEY, "\x1bf", "\x1bF") or _is_modified_right_key(key)
+
+
+def _is_comment_word_delete_key(key: int | str) -> bool:
+    return key in (23, "\x17")
 
 
 def _is_ctrl_c(key: int | str) -> bool:
