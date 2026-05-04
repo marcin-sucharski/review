@@ -46,6 +46,10 @@ For untracked files, the implementation can synthesize an added-file diff from f
 
 Large or binary untracked files should be marked as binary or skipped with a clear indication.
 
+If an untracked path also exists in the selected base, such as a rename source restored in the worktree, compare the worktree path against the base path. Omit the restored source when the contents match the base; show it as modified when it differs. In both cases, the rename target is not displayed as a rename because the final worktree contains both paths; display the target as an added file.
+
+Worktree symlinks should be read with `os.readlink` so the review shows the link target. The implementation must not dereference symlinks into the linked file contents, and broken symlinks should still show their stored target.
+
 ## Review Source: Branch Comparison
 
 The branch comparison source compares the final working-tree state against the merge base with the selected target branch. Committed branch changes plus current staged and unstaged edits must appear in the same PR-style review view, with mixed staged/unstaged edits shown only once as the final file state. Untracked files are included separately as added files.
@@ -107,7 +111,7 @@ The model must represent:
 - added files,
 - deleted files,
 - renamed files,
-- copied files,
+- Git-reported copied files normalized to added files,
 - binary files,
 - mode-only changes,
 - type changes,
@@ -167,6 +171,8 @@ Renamed files should show both old and new paths in the file header.
 If content changed, render the diff normally.
 
 If only renamed, show a metadata-only section and allow a file-level comment only if file-level comments are implemented. The initial line-comment workflow may simply display the rename with no commentable lines.
+
+If Git reports a copied file, display the copied path as an added file against empty old content. Do not diff it against the source path, and do not set the copied source as `old_path`.
 
 ## Expansion Model
 

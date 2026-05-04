@@ -73,6 +73,31 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertEqual(renamed.status, "renamed")
         self.assertEqual(renamed.old_path, "web/app.ts")
 
+    def test_collect_uncommitted_displays_git_copies_as_added_files(self):
+        write(self.root, "copy-source.txt", "alpha\nbeta\n")
+        git(self.root, "add", "copy-source.txt")
+        git(self.root, "commit", "-m", "add copy source")
+        copy_text = (self.root / "copy-source.txt").read_text(encoding="utf-8")
+        (self.root / "copy-target.txt").write_text(copy_text, encoding="utf-8")
+        write(self.root, "copy-source.txt", "alpha\nbeta\ngamma\n")
+        git(self.root, "add", "copy-source.txt", "copy-target.txt")
+        raw_status = subprocess.run(
+            ["git", "diff", "--name-status", "-z", "--find-renames=20%", "--find-copies=20%", "HEAD", "--"],
+            cwd=self.root,
+            capture_output=True,
+            check=True,
+        ).stdout
+        self.assertIn(b"C100\x00copy-source.txt\x00copy-target.txt", raw_status)
+
+        _, files = collect_uncommitted(self.root)
+
+        copied = [file for file in files if file.path == "copy-target.txt"][0]
+        self.assertEqual(copied.status, "added")
+        self.assertIsNone(copied.old_path)
+        self.assertEqual([line.text for line in copied.lines if line.kind == "addition"], ["alpha", "beta"])
+        self.assertEqual([line.text for line in copied.lines if line.kind == "deletion"], [])
+        self.assertEqual(copied.display_path, "copy-target.txt")
+
     def test_collect_uncommitted_rename_only_is_metadata_only(self):
         git(self.root, "mv", "web/app.ts", "web/app-renamed.ts")
         _, files = collect_uncommitted(self.root)
@@ -167,6 +192,33 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertTrue(binary.binary)
         self.assertEqual(binary.status, "binary")
 
+    def test_collect_uncommitted_preserves_symlink_targets_without_dereferencing(self):
+        external = self.root.parent / "outside-target.txt"
+        external.write_text("external file contents\n", encoding="utf-8")
+        link_path = self.root / "external.link"
+        try:
+            os.symlink(str(external), link_path)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
+
+        _, files = collect_uncommitted(self.root)
+
+        link = [file for file in files if file.path == "external.link"][0]
+        additions = [line.text for line in link.lines if line.kind == "addition"]
+        self.assertEqual(additions, [str(external)])
+        self.assertNotIn("external file contents", additions)
+
+    def test_collect_uncommitted_preserves_broken_symlink_target(self):
+        try:
+            os.symlink("missing-target.txt", self.root / "broken.link")
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation is unavailable: {exc}")
+
+        _, files = collect_uncommitted(self.root)
+
+        link = [file for file in files if file.path == "broken.link"][0]
+        self.assertEqual([line.text for line in link.lines if line.kind == "addition"], ["missing-target.txt"])
+
     def test_collect_uncommitted_ignores_staged_change_hidden_by_worktree_revert(self):
         write(self.root, "web/app.ts", "export const value = 2;\n")
         git(self.root, "add", "web/app.ts")
@@ -247,6 +299,43 @@ class GitIntegrationTests(unittest.TestCase):
         renamed = [file for file in files if file.path == "rename-target.txt"][0]
         self.assertEqual(renamed.status, "renamed")
         self.assertEqual(renamed.old_path, "rename-source.txt")
+
+    def test_collect_uncommitted_restored_rename_source_makes_target_added_when_source_matches_base(self):
+        write(self.root, "restored-source.txt", "same\n")
+        git(self.root, "add", "restored-source.txt")
+        git(self.root, "commit", "-m", "add restored rename source")
+        git(self.root, "mv", "restored-source.txt", "restored-target.txt")
+        git(self.root, "add", "-A")
+        write(self.root, "restored-source.txt", "same\n")
+
+        _, files = collect_uncommitted(self.root)
+
+        paths = [file.path for file in files]
+        self.assertIn("restored-target.txt", paths)
+        self.assertNotIn("restored-source.txt", paths)
+        target = [file for file in files if file.path == "restored-target.txt"][0]
+        self.assertEqual(target.status, "added")
+        self.assertIsNone(target.old_path)
+        self.assertEqual([line.text for line in target.lines if line.kind == "addition"], ["same"])
+        self.assertEqual(target.metadata, [])
+
+    def test_collect_uncommitted_compares_restored_rename_source_when_it_differs_from_base(self):
+        write(self.root, "restored-source.txt", "same\n")
+        git(self.root, "add", "restored-source.txt")
+        git(self.root, "commit", "-m", "add restored rename source")
+        git(self.root, "mv", "restored-source.txt", "restored-target.txt")
+        git(self.root, "add", "-A")
+        write(self.root, "restored-source.txt", "changed\n")
+
+        _, files = collect_uncommitted(self.root)
+
+        target = [file for file in files if file.path == "restored-target.txt"][0]
+        self.assertEqual(target.status, "added")
+        self.assertIsNone(target.old_path)
+        restored = [file for file in files if file.path == "restored-source.txt"][0]
+        self.assertEqual(restored.status, "modified")
+        self.assertEqual([line.text for line in restored.lines if line.kind == "deletion"], ["same"])
+        self.assertEqual([line.text for line in restored.lines if line.kind == "addition"], ["changed"])
 
     def test_collect_uncommitted_uses_head_as_base_for_mixed_rename(self):
         write(self.root, "rename-source.txt", "alpha\nbase\nomega\n")

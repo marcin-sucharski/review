@@ -48,6 +48,8 @@ When a tmux pane is selected, the tool sends the generated review feedback to th
 
 Every non-empty review is also saved before delivery. The archive is a JSON file under `$XDG_DATA_HOME/review/reviews` or, when `XDG_DATA_HOME` is not set, `~/.local/share/review/reviews`. Each file contains the repository path, current Git branch, and exact generated review message.
 
+Archived reviews can be inspected without being in a Git repository. `review ls` lists the 10 most recent saved reviews, one per line. `review display` opens a small interactive history menu and prints the selected review message to stdout, keeping prompts off stdout so redirection captures only the review body. `review display --file` or `review display -f` saves the selected review message to a timestamped review file in the current directory instead.
+
 The tool must be thoroughly tested with unit tests, integration tests using temporary Git repositories, TUI behavior tests, and tmux integration tests where possible.
 
 ## Documentation Map

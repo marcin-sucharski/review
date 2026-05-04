@@ -475,6 +475,101 @@ class CliPromptTests(unittest.TestCase):
             if write_fd != -1:
                 os.close(write_fd)
 
+    def test_review_ls_lists_recent_archived_reviews_without_git_repository(self):
+        reviews = [
+            cli.ArchivedReview(Path(f"/archive/{index}.json"), f"/repo/{index}", f"branch-{index}", f"message {index}\n")
+            for index in range(11)
+        ]
+        with (
+            mock.patch.object(cli, "list_archived_reviews", return_value=reviews[:10]) as list_archived_reviews,
+            mock.patch.object(cli, "repository_root", side_effect=AssertionError("history command should not inspect git")),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            self.assertEqual(cli.main(["ls"]), 0)
+
+        list_archived_reviews.assert_called_once_with(limit=10)
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual(len(lines), 10)
+        self.assertIn("1. 0  branch-0  /repo/0", lines[0])
+        self.assertIn("10. 9  branch-9  /repo/9", lines[-1])
+
+    def test_review_ls_reports_when_no_archived_reviews_exist(self):
+        with (
+            mock.patch.object(cli, "list_archived_reviews", return_value=[]),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            self.assertEqual(cli.main(["ls"]), 0)
+
+        self.assertEqual(stdout.getvalue(), "No saved reviews.\n")
+
+    def test_review_display_selects_archived_review_and_prints_message(self):
+        reviews = [
+            cli.ArchivedReview(Path("/archive/first.json"), "/repo/one", "main", "first review\n"),
+            cli.ArchivedReview(Path("/archive/second.json"), "/repo/two", "feature", "second review\n"),
+        ]
+        with (
+            mock.patch.object(cli, "list_archived_reviews", return_value=reviews),
+            mock.patch.object(cli, "select_option_on_stream", return_value="1") as select_option,
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            self.assertEqual(cli.main(["display"]), 0)
+
+        title, options = select_option.call_args.args
+        self.assertEqual(title, "Saved reviews")
+        self.assertEqual([option.value for option in options], ["0", "1"])
+        self.assertEqual(options[1].label, "second  feature  /repo/two")
+        self.assertEqual(stdout.getvalue(), "second review\n")
+
+    def test_review_display_file_saves_selected_archived_review(self):
+        review = cli.ArchivedReview(Path("/archive/review.json"), "/repo", "main", "# Review\n")
+        saved_path = Path("/tmp/review-20260504-0907.md")
+        with (
+            mock.patch.object(cli, "list_archived_reviews", return_value=[review]),
+            mock.patch.object(cli, "select_option_on_stream", return_value="0"),
+            mock.patch.object(cli, "save_review_file", return_value=saved_path) as save_review_file,
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            self.assertEqual(cli.main(["display", "--file"]), 0)
+
+        save_review_file.assert_called_once_with("# Review\n")
+        self.assertEqual(stdout.getvalue(), f"Saved review to {saved_path}.\n")
+
+    def test_review_display_file_failure_prints_selected_review_as_fallback(self):
+        review = cli.ArchivedReview(Path("/archive/review.json"), "/repo", "main", "# Review\n")
+        with (
+            mock.patch.object(cli, "list_archived_reviews", return_value=[review]),
+            mock.patch.object(cli, "select_option_on_stream", return_value="0"),
+            mock.patch.object(cli, "save_review_file", side_effect=OSError("read-only directory")),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            self.assertEqual(cli.main(["display", "-f"]), 1)
+
+        self.assertEqual(stdout.getvalue(), "# Review\n")
+        self.assertIn("could not save review file", stderr.getvalue())
+        self.assertIn("read-only directory", stderr.getvalue())
+
+    def test_review_display_text_prompt_goes_to_stderr_when_stdout_is_review_body(self):
+        reviews = [
+            cli.ArchivedReview(Path("/archive/new.json"), "/repo/new", "feature", "new review\n"),
+            cli.ArchivedReview(Path("/archive/old.json"), "/repo/old", "main", "old review\n"),
+        ]
+        stdin = io.StringIO("2\n")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(cli, "list_archived_reviews", return_value=reviews),
+            mock.patch.object(cli.sys, "stdin", stdin),
+            mock.patch.object(cli.sys, "stdout", stdout),
+            mock.patch.object(cli.sys, "stderr", stderr),
+        ):
+            self.assertEqual(cli.main(["display"]), 0)
+
+        self.assertEqual(stdout.getvalue(), "old review\n")
+        self.assertIn("Saved reviews:", stderr.getvalue())
+        self.assertIn("Select option [1]:", stderr.getvalue())
+        self.assertNotIn("Saved reviews:", stdout.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

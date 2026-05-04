@@ -58,12 +58,12 @@ The uncommitted review source includes:
 - added files,
 - deleted files,
 - renamed files,
-- copied files if Git reports them,
+- copied files displayed as added files if Git reports copies,
 - optionally untracked files if the implementation supports producing content for them.
 
 Staged and unstaged changes for the same path must be shown as a single unified file entry, not as separate staged and unstaged review sections. The visible diff must represent the final working-tree state against `HEAD`; if a staged line is modified again before review, only the final working-tree line is shown.
 
-The implementation must define and test the exact untracked-file behavior. The preferred behavior is to include untracked text files as added files.
+The implementation must define and test the exact untracked-file behavior. The preferred behavior is to include untracked text files as added files. Worktree symlinks must be read as link targets, not by dereferencing the linked file.
 
 ### Branch Comparison
 
@@ -284,6 +284,8 @@ Each archive file contains:
 - `path`: repository path where the review occurred,
 - `branch`: current Git branch, or a detached-head label when applicable,
 - `review_message`: the exact generated review text used for tmux/stdout delivery.
+
+The archive can be queried outside a Git repository. `review ls` lists the 10 most recent archived reviews, one review per line. `review display` opens an interactive menu over the same recent reviews and prints the selected `review_message` to stdout. Selection prompts must not be written to stdout, so `review display > review.md` captures only the selected review body. `review display --file` / `review display -f` saves the selected message to a timestamped review file in the current directory instead of printing it.
 
 ## Accessibility And Usability
 

@@ -31,15 +31,29 @@ class MenuOption:
 
 
 def select_option(title: str, options: list[MenuOption], *, default_index: int = 0, cancel_requires_double: bool = False) -> str:
+    return select_option_on_stream(title, options, default_index=default_index, cancel_requires_double=cancel_requires_double)
+
+
+def select_option_on_stream(
+    title: str,
+    options: list[MenuOption],
+    *,
+    default_index: int = 0,
+    cancel_requires_double: bool = False,
+    input_stream: TextIO | None = None,
+    output_stream: TextIO | None = None,
+) -> str:
     if not options:
         raise ValueError("menu requires at least one option")
+    input_stream = input_stream or sys.stdin
+    output_stream = output_stream or sys.stdout
     default_index = max(0, min(default_index, len(options) - 1))
-    if sys.stdin.isatty() and sys.stdout.isatty():
+    if input_stream.isatty() and output_stream.isatty():
         try:
-            return _select_option_inline(title, options, default_index, sys.stdin, sys.stdout, cancel_requires_double)
+            return _select_option_inline(title, options, default_index, input_stream, output_stream, cancel_requires_double)
         except OSError:
             pass
-    return _select_option_text(title, options, default_index, cancel_requires_double)
+    return _select_option_text(title, options, default_index, cancel_requires_double, input_stream, output_stream)
 
 
 def select_branch_target(
@@ -235,19 +249,28 @@ def _clear_rendered_menu(output_stream: TextIO, line_count: int) -> None:
     output_stream.flush()
 
 
-def _select_option_text(title: str, options: list[MenuOption], default_index: int, cancel_requires_double: bool) -> str:
-    print(f"{title}:")
+def _select_option_text(
+    title: str,
+    options: list[MenuOption],
+    default_index: int,
+    cancel_requires_double: bool,
+    input_stream: TextIO,
+    output_stream: TextIO,
+) -> str:
+    output_stream.write(f"{title}:\n")
     for index, option in enumerate(options, start=1):
         default = " (default)" if index - 1 == default_index else ""
         detail = f" - {option.detail}" if option.detail else ""
-        print(f"  {index}. {option.label}{detail}{default}")
+        output_stream.write(f"  {index}. {option.label}{detail}{default}\n")
+    output_stream.flush()
     cancel_armed = False
     while True:
         try:
-            choice = input(f"Select option [{default_index + 1}]: ").strip()
+            choice = _read_text_menu_choice(input_stream, output_stream, f"Select option [{default_index + 1}]: ")
         except KeyboardInterrupt:
             if cancel_requires_double and not cancel_armed:
-                print("\nPress Ctrl+C again to cancel.")
+                output_stream.write("\nPress Ctrl+C again to cancel.\n")
+                output_stream.flush()
                 cancel_armed = True
                 continue
             raise
@@ -258,8 +281,18 @@ def _select_option_text(title: str, options: list[MenuOption], default_index: in
         for option in options:
             if choice == option.value or choice == option.label:
                 return option.value
-        print("Please select a listed option.")
+        output_stream.write("Please select a listed option.\n")
+        output_stream.flush()
         cancel_armed = False
+
+
+def _read_text_menu_choice(input_stream: TextIO, output_stream: TextIO, prompt: str) -> str:
+    output_stream.write(prompt)
+    output_stream.flush()
+    choice = input_stream.readline()
+    if choice == "":
+        raise EOFError
+    return choice.strip()
 
 
 def _render_menu_lines(title: str, options: list[MenuOption], selected: int, *, use_color: bool, cancel_armed: bool = False) -> list[str]:

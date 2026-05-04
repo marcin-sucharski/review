@@ -38,6 +38,9 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Modified files render correctly.
 - [ ] Deleted files render correctly.
 - [ ] Renamed files render correctly.
+- [ ] Git-reported copied files render as added files.
+- [ ] Symlink changes render link targets without dereferencing linked file contents.
+- [ ] Restored rename sources make the target render as added, with the source omitted when unchanged and shown as modified when changed.
 - [ ] Binary files do not crash the UI.
 - [ ] Branch comparison uses merge-base PR-style semantics.
 - [ ] Uncommitted review shows the final working-tree diff against `HEAD`, without duplicated staged/unstaged hunks.
@@ -170,6 +173,11 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Archive JSON includes current `branch` or detached-head label.
 - [ ] Archive JSON includes exact `review_message`.
 - [ ] Each non-empty review creates a separate JSON file.
+- [ ] `review ls` lists at most 10 recent archived reviews, one per line.
+- [ ] `review display` lets the user select an archived review and prints it to stdout.
+- [ ] `review display` keeps interactive selection prompts off stdout so redirection captures only the selected review message.
+- [ ] `review display --file` saves the selected archived review to a timestamped local file.
+- [ ] Archive history commands work outside Git repositories.
 
 ## Output Format
 

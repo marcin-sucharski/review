@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,22 +138,31 @@ def _collect_worktree_files(
     files: list[ReviewFile | None] = []
 
     for entry in entries:
-        if _is_staged_delete_recreated_in_worktree(entry, untracked_path_set):
+        if _is_rename_with_restored_source(entry, untracked_path_set):
+            assert entry.old_path is not None
+            consumed_untracked_paths.add(entry.old_path)
+            files.append(_build_entry_target_as_added(root, entry, None))
+            files.append(_build_untracked_file(root, base, entry.old_path))
+        elif _is_staged_delete_recreated_in_worktree(entry, untracked_path_set):
             consumed_untracked_paths.add(entry.path)
-            files.append(_build_recreated_worktree_file(root, base, entry.path))
+            files.append(_build_untracked_file(root, base, entry.path))
         else:
             files.append(_build_file_from_refs(root, entry, base, None))
 
     seen = {entry.path for entry in entries}
     for path in untracked_paths:
         if path not in seen and path not in consumed_untracked_paths:
-            files.append(_build_untracked_file(root, path))
+            files.append(_build_untracked_file(root, base, path))
 
     return _present_files(files)
 
 
 def _is_staged_delete_recreated_in_worktree(entry: NameStatus, untracked_path_set: set[str]) -> bool:
     return entry.status.startswith("D") and entry.path in untracked_path_set
+
+
+def _is_rename_with_restored_source(entry: NameStatus, untracked_path_set: set[str]) -> bool:
+    return entry.status.startswith("R") and entry.old_path in untracked_path_set
 
 
 def _present_files(files: list[ReviewFile | None]) -> list[ReviewFile]:
@@ -217,6 +227,9 @@ def _untracked_paths(root: Path) -> list[str]:
 
 
 def _build_file_from_refs(root: Path, entry: NameStatus, old_ref: str, new_ref: str | None) -> ReviewFile | None:
+    if entry.status.startswith("C"):
+        return _build_entry_target_as_added(root, entry, new_ref)
+
     status = _status_name(entry.status)
     old_path = entry.old_path or entry.path
     new_path = entry.path
@@ -294,24 +307,24 @@ def _create_review_file_from_bytes(
     )
 
 
-def _build_recreated_worktree_file(root: Path, base: str, path: str) -> ReviewFile | None:
-    old_bytes = _read_ref(root, base, path)
-    new_bytes = _read_worktree(root, path)
+def _build_entry_target_as_added(root: Path, entry: NameStatus, new_ref: str | None) -> ReviewFile | None:
+    new_bytes = _read_worktree(root, entry.path) if new_ref is None else _read_ref(root, new_ref, entry.path)
     if new_bytes is None:
         return None
-    if old_bytes is None:
-        return _build_untracked_file(root, path)
-    if old_bytes == new_bytes:
-        return None
-    if _is_binary(old_bytes) or _is_binary(new_bytes):
-        return _create_review_file_from_bytes(path, "modified", old_bytes, new_bytes, binary=True)
-    return _create_review_file_from_bytes(path, "modified", old_bytes, new_bytes)
+    return _create_review_file_from_bytes(entry.path, "added", b"", new_bytes, binary=_is_binary(new_bytes))
 
 
-def _build_untracked_file(root: Path, path: str) -> ReviewFile | None:
+def _build_untracked_file(root: Path, base: str, path: str) -> ReviewFile | None:
     data = _read_worktree(root, path)
     if data is None:
         return None
+    old_data = _read_ref(root, base, path)
+    if old_data is not None:
+        if old_data == data:
+            return None
+        if _is_binary(old_data) or _is_binary(data):
+            return _create_review_file_from_bytes(path, "modified", old_data, data, binary=True)
+        return _create_review_file_from_bytes(path, "modified", old_data, data)
     if _is_binary(data):
         return _create_review_file_from_bytes(path, "added", b"", data, binary=True, metadata=["Untracked binary file"])
     return _create_review_file_from_bytes(path, "added", b"", data, metadata=["Untracked file"])
@@ -326,6 +339,11 @@ def _read_ref(root: Path, ref: str, path: str) -> bytes | None:
 
 def _read_worktree(root: Path, path: str) -> bytes | None:
     full_path = root / path
+    if full_path.is_symlink():
+        try:
+            return os.readlink(os.fsencode(full_path))
+        except OSError:
+            return None
     if not full_path.exists() or not full_path.is_file():
         return None
     return full_path.read_bytes()

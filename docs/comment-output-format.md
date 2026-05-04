@@ -219,6 +219,8 @@ Required JSON shape:
 }
 ```
 
+`review ls` reads this archive directory and lists the 10 most recent valid saved reviews. `review display` lets the user select one recent archive and emits the stored `review_message`; its selection prompts must not be written to stdout. `review display --file` writes that stored message to a timestamped local review file.
+
 `review_message` must be byte-for-byte the same text sent to tmux or printed to stdout for that review.
 
 For detached HEAD, `branch` may use a stable descriptive value such as `detached:<short-sha>`.

@@ -66,6 +66,10 @@ Fixture files should cover required languages:
 | Branch comparison target does not exist | Friendly error |
 | Git command fails | Friendly error without raw traceback |
 | User presses `Ctrl+C` in startup review-source prompt | Exits cleanly on first press |
+| Worktree symlink points outside the repository | Review shows the symlink target path, not linked file contents |
+| Worktree symlink is broken | Review still shows the stored symlink target |
+| Rename source is restored unchanged in worktree | Rename target is displayed as added; restored source is omitted |
+| Rename source is restored with different content | Rename target is displayed as added; restored source is compared with the base path and shown as modified |
 
 ## Branch Selection Tests
 
@@ -95,7 +99,7 @@ Fixture files should cover required languages:
 | Deleted file | Parsed as deleted with old-side line numbers |
 | Renamed file without content changes | Parsed as rename metadata |
 | Renamed file with content changes | Parsed as rename plus changed lines |
-| Copied file | Parsed as copied when Git reports copy |
+| Copied file | Displayed as an added file even when Git reports copy |
 | File mode change | Metadata preserved |
 | Binary file changed | Parsed as binary, not line-commentable |
 | File path contains spaces | Parsed path remains correct |
@@ -292,6 +296,12 @@ Fixture files should cover required languages:
 | Current branch is available | JSON `branch` equals branch name |
 | Detached HEAD | JSON `branch` uses detached short-sha label |
 | Archive payload | Contains `path`, `branch`, and exact `review_message` |
+| More than 10 archive files exist | `review ls` prints only the 10 most recent valid reviews |
+| Archive directory contains invalid JSON | History commands skip invalid archive files |
+| `review ls` is run outside a Git repository | Recent archived reviews are listed without Git lookup |
+| `review display` is run outside a Git repository | User can select a saved review and it prints to stdout |
+| `review display` stdout is redirected | Selection menu is written away from stdout and redirected stdout contains only `review_message` |
+| `review display --file` is selected | Selected review is written to a timestamped local review file |
 
 ## Tmux Unit Tests
 

@@ -53,7 +53,7 @@ docs/
 
 `format_review.py` turns saved comments and referenced context into the final feedback message. Markdown is the default output format, and XML is available through the CLI output-format option.
 
-`archive.py` persists completed non-empty reviews as JSON under the XDG local data directory.
+`archive.py` persists completed non-empty reviews as JSON under the XDG local data directory and exposes read APIs for recent-review history commands.
 
 `tmux.py` discovers panes and sends text to a selected pane.
 
@@ -103,7 +103,7 @@ Fields:
 
 - `path`: current file path.
 - `old_path`: previous path for renames.
-- `status`: added, modified, deleted, renamed, copied, binary, mode-changed.
+- `status`: added, modified, deleted, renamed, binary, mode-changed. Git-reported copies are normalized to added files for display.
 - `language`: syntax highlighting language.
 - `old_lines`: optional old-side lines.
 - `new_lines`: optional new-side lines.
@@ -161,7 +161,7 @@ Fields:
 - `branch`: current Git branch, or a detached-head label if not on a branch.
 - `review_message`: exact generated message used for stdout or tmux delivery.
 
-Archive files live under `$XDG_DATA_HOME/review/reviews` with a `~/.local/share/review/reviews` fallback. The filename should be unique and stable enough to avoid collisions, typically using a UTC timestamp plus random suffix.
+Archive files live under `$XDG_DATA_HOME/review/reviews` with a `~/.local/share/review/reviews` fallback. The filename should be unique and stable enough to avoid collisions, typically using a UTC timestamp plus random suffix. History commands read this directory directly, ignore malformed archive files, sort recent valid reviews first, and cap the default list at 10 entries.
 
 ## Diff Representation
 

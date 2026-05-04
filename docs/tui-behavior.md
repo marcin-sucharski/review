@@ -53,7 +53,7 @@ Suggested markers:
 | Added | `A` |
 | Deleted | `D` |
 | Renamed | `R` |
-| Copied | `C` |
+| Copied file reported by Git | `A` |
 | Binary | `B` |
 
 The highlighted file is the file currently visible in the review pane or selected by the user.
