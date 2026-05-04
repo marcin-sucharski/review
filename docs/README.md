@@ -15,7 +15,7 @@ On startup, the CLI asks whether the user wants to review:
 
 After the selection, the CLI detects the corresponding Git changes and opens a terminal user interface.
 
-For pull-request style reviews, the target branch picker shows the current branch on the left and the target branch after `->`. It shows five branch choices at a time, supports `Up`/`Down` selection, and filters by typed substring immediately.
+For pull-request style reviews, the target branch picker shows the current branch on the left and the target branch after `->`. It shows five branch choices at a time, supports `Up`/`Down` selection, and filters by typed substring immediately. The PR-style review includes committed branch changes and the current uncommitted changes on top of the branch, including staged, unstaged, and untracked files.
 
 For uncommitted reviews, staged and unstaged changes are collected together and shown as one unified review view. A file that has both staged and unstaged edits appears once, without separate staged and unstaged sections.
 
@@ -32,7 +32,7 @@ The right pane shows changed files with syntax highlighting and line numbers. Li
 
 Users can navigate between panes with `Tab`. When the left pane is visible, focus cycles through the review pane, file tree, and comment list. In the review pane, users can move the selected line with arrow keys and page keys. Mouse support lets users click a pane or line to focus and select it.
 
-Users can select one or more lines. `Shift+Up` and `Shift+Down` extend or shrink the selected range. Pressing `Enter` on selected code lines opens an inline GitHub-style comment input below the selected line or range. `Ctrl+J` inserts a newline in the comment input and `Enter` saves the comment. Comments are stored in memory and rendered inline beneath the referenced code. Multi-line comments must visually show the range they apply to.
+Users can select one or more lines. `Shift+Up` and `Shift+Down` extend or shrink the selected range. Pressing `Enter` on selected code lines opens an inline GitHub-style comment input below the selected line or range. `Ctrl+J` inserts a newline in the comment input and `Enter` saves the comment. While writing or editing a comment, arrow keys move within the message, `Ctrl+A`/`Ctrl+E` move to line or message boundaries, and supported `Option+Left`/`Option+Right` sequences move by word. Comments are stored in memory and rendered inline beneath the referenced code. Multi-line comments must visually show the range they apply to.
 
 Exiting uses Vim-style command mode: the user presses `:` and then enters `q`. The command menu initially supports only quit, but must be designed so more commands can be added later.
 
@@ -40,10 +40,11 @@ Exiting uses Vim-style command mode: the user presses `:` and then enters `q`. T
 
 When the review ends, the CLI asks where to send the review:
 
-- a selected tmux pane, chosen from available panes with titles and pane IDs, or
-- no pane, in which case the tool prints the final review text to standard output and exits.
+- save to a timestamped Markdown file in the current directory, named `review-YYYYMMDD-HHMM.md`,
+- send to terminal, in which case the tool prints the final review text to standard output and exits, or
+- a selected tmux pane, chosen from available panes with titles and pane IDs.
 
-When a tmux pane is selected, the tool sends the generated review feedback to that pane and presses Enter. Non-empty review feedback is Markdown by default and can be switched to XML with `--output-format xml` or `-o xml`. Both formats group comments by file and include referenced line numbers, selected context lines, and the user comment body.
+When a tmux pane is selected, the tool sends the generated review feedback to that pane and presses Enter. Non-empty review feedback is Markdown by default and can be switched to XML with `--output-format xml` or `-o xml`. Both formats group comments by file and include referenced line numbers, selected context lines, and the user comment body. The save-to-file delivery target always writes Markdown for easy local reading.
 
 Every non-empty review is also saved before delivery. The archive is a JSON file under `$XDG_DATA_HOME/review/reviews` or, when `XDG_DATA_HOME` is not set, `~/.local/share/review/reviews`. Each file contains the repository path, current Git branch, and exact generated review message.
 
@@ -88,4 +89,4 @@ The tool must be thoroughly tested with unit tests, integration tests using temp
 
 `Comment range` means one or more lines in a single file that a review comment applies to.
 
-`Delivery target` means either a tmux pane or standard output.
+`Delivery target` means a timestamped Markdown file, standard output, or a tmux pane.

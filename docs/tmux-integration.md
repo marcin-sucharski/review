@@ -57,19 +57,20 @@ tmux display-message -p '#{pane_id}'
 
 Preferred behavior is to include the current pane in the list but mark it clearly. Sending feedback to the current pane may be allowed, but it should not be the default target.
 
-## No Pane Option
+## Local Delivery Options
 
 The delivery target selector must include:
 
 ```text
-No tmux pane - print to stdout
+Save to file - write Markdown to ./review-YYYYMMDD-HHMM.md
+Send to terminal - print to stdout
 ```
 
-This option is required even when tmux is available.
+These options are required even when tmux is available. Save to file is listed first, send to terminal is listed second, and tmux panes follow.
 
-If tmux is unavailable or no panes are found, stdout should be offered automatically.
+If tmux is unavailable or no panes are found, both local delivery options should still be offered.
 
-Choosing stdout still writes the local JSON archive first when the review contains comments.
+Choosing either local delivery option still writes the local JSON archive first when the review contains comments. The save-to-file delivery writes Markdown in the current directory even when stdout/tmux output was configured as XML.
 
 ## Sending Text
 
@@ -107,7 +108,7 @@ The integration must handle:
 - `paste-buffer` failure,
 - `send-keys` failure.
 
-On send failure, the tool should show the formatted review text or offer stdout fallback so comments are not lost.
+On send failure, the tool should show the formatted review text or offer a local fallback so comments are not lost.
 
 ## Testing Strategy
 
@@ -115,7 +116,7 @@ Unit tests should mock command execution and verify:
 
 - pane list parsing,
 - current pane detection,
-- stdout fallback decisions,
+- local fallback decisions,
 - command construction,
 - literal text handling.
 

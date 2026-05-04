@@ -127,13 +127,15 @@ The formatter should preserve indentation in code text. If the copied source con
 
 Markdown output is the default and is also available explicitly with `--output-format md` or `-o md`. It is intended for agents or panes where plain Markdown is preferred.
 
+The delivery menu also includes a save-to-file target. That target always writes Markdown to the current directory using a minute-resolution timestamped file name such as `review-20260504-1430.md`, independent of the selected stdout/tmux output format.
+
 Markdown output uses stable headings, file sections, line labels, fenced code context, and fenced comment bodies:
 
 ````text
-Review comments for /repo
-Source: branch comparison against main
+# Review comments for /repo
+## Source: branch comparison against main
 
-File: src/example.ts
+### File: src/example.ts
 
 Lines: 42-44
 ```ts
@@ -213,7 +215,7 @@ Required JSON shape:
 {
   "path": "/absolute/path/to/repository",
   "branch": "feature/review",
-  "review_message": "Review comments for /absolute/path/to/repository\n..."
+  "review_message": "# Review comments for /absolute/path/to/repository\n..."
 }
 ```
 

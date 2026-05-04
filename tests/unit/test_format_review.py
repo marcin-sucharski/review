@@ -130,9 +130,9 @@ class FormatReviewTests(unittest.TestCase):
 
         output = format_review(state)
 
-        self.assertIn("Review comments for /repo", output)
-        self.assertIn("Source: branch comparison against main", output)
-        self.assertIn("File: src/app.ts", output)
+        self.assertIn("# Review comments for /repo", output)
+        self.assertIn("## Source: branch comparison against main", output)
+        self.assertIn("### File: src/app.ts", output)
         self.assertIn("Old line: 1; New line: 1", output)
         self.assertIn("```ts\n   1 - const a = 1;\n   1 + const a = 2;\n```", output)
         self.assertIn("Comment:\n~~~text\nUse a named constant.\n~~~", output)

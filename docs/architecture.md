@@ -78,7 +78,7 @@ docs/
 9. Formatter creates final review message.
 10. If the review has comments, CLI writes a JSON archive.
 11. CLI asks for delivery target.
-12. Delivery writes to tmux pane or stdout.
+12. Delivery writes Markdown to a timestamped local file, writes to stdout, or sends to a tmux pane.
 
 ## Core Domain Objects
 

@@ -12,6 +12,7 @@ from .errors import GitCommandError, NoChangesFound, NotAGitRepository
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 INDEX_REF = "INDEX"
 MERGED_UNCOMMITTED_METADATA = "Includes staged and unstaged changes"
+MERGED_BRANCH_METADATA = "Includes committed and uncommitted changes"
 
 
 @dataclass(frozen=True)
@@ -98,13 +99,13 @@ def list_branches(root: Path) -> list[str]:
 
 
 def _common_branch_priority(branch: str) -> int:
-    if branch == "main":
-        return 0
     if branch == "master":
+        return 0
+    if branch == "main":
         return 1
-    if branch.endswith("/main"):
-        return 2
     if branch.endswith("/master"):
+        return 2
+    if branch.endswith("/main"):
         return 3
     return 4
 
@@ -136,6 +137,8 @@ def _collect_uncommitted_files(
     staged_entries: list[NameStatus],
     unstaged_entries: list[NameStatus],
     untracked_paths: list[str],
+    *,
+    merged_summary: str = MERGED_UNCOMMITTED_METADATA,
 ) -> list[ReviewFile]:
     untracked_path_set = set(untracked_paths)
     consumed_untracked_paths: set[str] = set()
@@ -145,12 +148,12 @@ def _collect_uncommitted_files(
     files: list[ReviewFile | None] = []
 
     for entry in unstaged_entries:
-        files.append(_build_unstaged_file(root, base, entry, staged_by_path, consumed_staged_paths))
+        files.append(_build_unstaged_file(root, base, entry, staged_by_path, consumed_staged_paths, merged_summary))
         seen.add(entry.path)
 
     for entry in staged_entries:
         if entry.path not in consumed_staged_paths:
-            files.append(_build_staged_file(root, base, entry, untracked_path_set, consumed_untracked_paths))
+            files.append(_build_staged_file(root, base, entry, untracked_path_set, consumed_untracked_paths, merged_summary))
             seen.add(entry.path)
 
     for path in untracked_paths:
@@ -166,11 +169,12 @@ def _build_unstaged_file(
     entry: NameStatus,
     staged_by_path: dict[str, NameStatus],
     consumed_staged_paths: set[str],
+    merged_summary: str,
 ) -> ReviewFile | None:
     staged_entry = staged_by_path.get(entry.path)
     if staged_entry is not None:
         consumed_staged_paths.add(staged_entry.path)
-        return _build_merged_uncommitted_file(root, staged_entry, entry, base)
+        return _build_merged_uncommitted_file(root, staged_entry, entry, base, merged_summary)
     return _build_file_from_refs(root, entry, INDEX_REF, None)
 
 
@@ -180,10 +184,11 @@ def _build_staged_file(
     entry: NameStatus,
     untracked_path_set: set[str],
     consumed_untracked_paths: set[str],
+    merged_summary: str,
 ) -> ReviewFile | None:
     if _is_staged_delete_recreated_in_worktree(entry, untracked_path_set):
         consumed_untracked_paths.add(entry.path)
-        return _build_merged_uncommitted_file(root, entry, NameStatus("A", entry.path), base)
+        return _build_merged_uncommitted_file(root, entry, NameStatus("A", entry.path), base, merged_summary)
     return _build_file_from_refs(root, entry, base, INDEX_REF)
 
 
@@ -197,9 +202,17 @@ def _present_files(files: list[ReviewFile | None]) -> list[ReviewFile]:
 
 def collect_branch_comparison(root: Path, target_branch: str) -> tuple[ReviewSource, list[ReviewFile]]:
     merge_base = run_git(root, ["merge-base", "HEAD", target_branch]).stdout.strip()
-    entries = _name_status(root, [merge_base, "HEAD", "--"])
-    files = [_build_file_from_refs(root, entry, merge_base, "HEAD") for entry in entries]
-    files = _present_files(files)
+    index_entries = _name_status(root, ["--cached", merge_base, "--"])
+    unstaged_entries = _name_status(root, ["--"])
+    untracked_paths = _untracked_paths(root)
+    files = _collect_uncommitted_files(
+        root,
+        merge_base,
+        index_entries,
+        unstaged_entries,
+        untracked_paths,
+        merged_summary=MERGED_BRANCH_METADATA,
+    )
     if not files:
         raise NoChangesFound(f"no changes found against {target_branch}")
     return ReviewSource("branch", target_branch=target_branch, base_ref=merge_base), files
@@ -332,7 +345,13 @@ def _create_review_file_from_bytes(
     )
 
 
-def _build_merged_uncommitted_file(root: Path, cached_entry: NameStatus, worktree_entry: NameStatus, base: str) -> ReviewFile | None:
+def _build_merged_uncommitted_file(
+    root: Path,
+    cached_entry: NameStatus,
+    worktree_entry: NameStatus,
+    base: str,
+    merged_summary: str,
+) -> ReviewFile | None:
     cached = _build_file_from_refs(root, cached_entry, base, INDEX_REF)
     worktree = _build_file_from_refs(root, worktree_entry, INDEX_REF, None)
     if cached is None:
@@ -340,7 +359,7 @@ def _build_merged_uncommitted_file(root: Path, cached_entry: NameStatus, worktre
     if worktree is None:
         return cached
     if cached.binary or worktree.binary:
-        worktree.metadata = _merged_metadata(cached, worktree, MERGED_UNCOMMITTED_METADATA)
+        worktree.metadata = _merged_metadata(cached, worktree, merged_summary)
         return worktree
     unified_entry = _merged_uncommitted_entry(cached_entry, worktree_entry, cached, worktree)
     unified = _build_file_from_refs(root, unified_entry, base, None)
@@ -352,7 +371,7 @@ def _build_merged_uncommitted_file(root: Path, cached_entry: NameStatus, worktre
         language=worktree.language,
         lines=lines,
         binary=False,
-        metadata=_merged_metadata(cached, worktree, MERGED_UNCOMMITTED_METADATA),
+        metadata=_merged_metadata(cached, worktree, merged_summary),
     )
 
 

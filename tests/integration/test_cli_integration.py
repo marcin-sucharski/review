@@ -44,6 +44,17 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, "No review comments.\n")
 
+    def test_no_tui_branch_review_collects_uncommitted_changes(self):
+        with self.make_repo() as temp:
+            root = Path(temp)
+            git(root, "checkout", "-b", "feature")
+            (root / "app.js").write_text("const value = 2;\n", encoding="utf-8")
+            result = self.run_review(root, "--source", "branch", "--target", "main", "--no-tui", "--stdout")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "No review comments.\n")
+            self.assertNotIn("no changes found", result.stdout)
+
     def test_no_changes_exits_cleanly(self):
         with self.make_repo() as temp:
             root = Path(temp)

@@ -20,6 +20,9 @@ INTERRUPT_CONFIRMATION_MESSAGE = "Press Ctrl+C again to quit review."
 MOUSE_SCROLL_LINES = 3
 SHIFT_UP_KEYS = {getattr(curses, "KEY_SR", -1000), getattr(curses, "KEY_SUP", -1001)}
 SHIFT_DOWN_KEYS = {getattr(curses, "KEY_SF", -1002), getattr(curses, "KEY_SDOWN", -1003)}
+COMMENT_WORD_LEFT_KEY = "comment-word-left"
+COMMENT_WORD_RIGHT_KEY = "comment-word-right"
+COMMENT_ESCAPE_TIMEOUT_MS = 35
 BOLD_ROLES = {"keyword", "tag", "heading", "error", "rail", "emphasis"}
 BACKGROUND_COLORS = {
     "addition": (194, curses.COLOR_GREEN),
@@ -162,8 +165,37 @@ class ReviewApp:
 
         while not self.quit_requested:
             self._draw(stdscr)
-            key = stdscr.get_wch()
+            key = self._read_key(stdscr)
             self._handle_key(key)
+
+    def _read_key(self, stdscr) -> int | str:
+        key = stdscr.get_wch()
+        if self.comment_mode and _is_escape(key):
+            return self._read_comment_escape_key(stdscr)
+        return key
+
+    def _read_comment_escape_key(self, stdscr) -> int | str:
+        sequence: list[int | str] = []
+        timeout_supported = hasattr(stdscr, "timeout")
+        try:
+            if timeout_supported:
+                stdscr.timeout(COMMENT_ESCAPE_TIMEOUT_MS)
+            else:
+                stdscr.nodelay(True)
+            for _ in range(8):
+                try:
+                    sequence.append(stdscr.get_wch())
+                except curses.error:
+                    break
+                if _escape_sequence_complete(sequence):
+                    break
+        finally:
+            if timeout_supported:
+                stdscr.timeout(-1)
+            else:
+                stdscr.nodelay(False)
+        decoded = _decode_comment_escape_sequence(sequence)
+        return decoded if decoded is not None else "\x1b"
 
     def _init_colors(self) -> None:
         if not curses.has_colors():
@@ -515,15 +547,7 @@ class ReviewApp:
         return max(1, len(chunks))
 
     def _code_line_modifiers(self, item: DocumentItem, selected: bool, selected_range: bool) -> int:
-        modifiers = curses.A_NORMAL
-        if selected_range:
-            if item.row_index == self.state.anchor_row:
-                modifiers |= curses.A_BOLD
-            if item.row_index == self.state.active_row:
-                modifiers |= curses.A_UNDERLINE
-        elif selected:
-            modifiers |= curses.A_UNDERLINE
-        return modifiers
+        return curses.A_NORMAL
 
     def _draw_gutter(
         self,
@@ -555,7 +579,7 @@ class ReviewApp:
         cursor_index: int | None = None,
     ) -> int:
         lines = _comment_display_lines(text)
-        modifiers = curses.A_UNDERLINE if selected else curses.A_NORMAL
+        modifiers = curses.A_NORMAL
         background = self._comment_background(saved, selected)
         attr = self._style("warning", background, modifiers) | (curses.A_BOLD if not saved else curses.A_NORMAL)
         row_attr = self._style("plain", background, modifiers)
@@ -590,8 +614,7 @@ class ReviewApp:
         return None
 
     def _draw_comment_gutter(self, stdscr, y: int, x: int, *, background: str | None = None, selected: bool = False) -> None:
-        modifiers = curses.A_UNDERLINE if selected else curses.A_NORMAL
-        self._draw_gutter(stdscr, y, x, "    ", " ", True, background, modifiers)
+        self._draw_gutter(stdscr, y, x, "    ", " ", True, background, curses.A_NORMAL)
 
     def _draw_syntax(
         self,
@@ -805,6 +828,19 @@ class ReviewApp:
             self.status_message = f"Unknown command: {command}"
 
     def _handle_comment_key(self, key: int | str) -> None:
+        key = _normalize_comment_key(key)
+        if _is_comment_line_start_key(key):
+            self._move_comment_cursor_to_line_start_or_message_start()
+            return
+        if _is_comment_line_end_key(key):
+            self._move_comment_cursor_to_line_end_or_message_end()
+            return
+        if _is_comment_word_left_key(key):
+            self._move_comment_cursor_word(-1)
+            return
+        if _is_comment_word_right_key(key):
+            self._move_comment_cursor_word(1)
+            return
         if _is_escape(key):
             self._close_comment_input()
             return
@@ -854,6 +890,21 @@ class ReviewApp:
         self.comment_cursor_index = max(0, min(len(self.comment_buffer), self.comment_cursor_index + delta))
         self.comment_cursor_goal_column = None
 
+    def _move_comment_cursor_to_line_start_or_message_start(self) -> None:
+        start, _ = _comment_cursor_line_bounds(self.comment_buffer, self.comment_cursor_index)
+        self.comment_cursor_index = 0 if self.comment_cursor_index == start else start
+        self.comment_cursor_goal_column = None
+
+    def _move_comment_cursor_to_line_end_or_message_end(self) -> None:
+        _, end = _comment_cursor_line_bounds(self.comment_buffer, self.comment_cursor_index)
+        message_end = len(self.comment_buffer)
+        self.comment_cursor_index = message_end if self.comment_cursor_index == end else end
+        self.comment_cursor_goal_column = None
+
+    def _move_comment_cursor_word(self, direction: int) -> None:
+        self.comment_cursor_index = _comment_word_cursor_index(self.comment_buffer, self.comment_cursor_index, direction)
+        self.comment_cursor_goal_column = None
+
     def _move_comment_cursor_vertical(self, delta: int) -> None:
         line_index, column = _comment_cursor_line_column(self.comment_buffer, self.comment_cursor_index)
         if self.comment_cursor_goal_column is None:
@@ -871,10 +922,15 @@ class ReviewApp:
                 self.status_message = "Comment updated."
             else:
                 self.status_message = "Empty comments are ignored."
-        elif self.state.add_comment(self.comment_buffer):
-            self.status_message = "Comment saved."
         else:
-            self.status_message = "Empty comments are ignored."
+            comment = self.state.add_comment(self.comment_buffer)
+            if comment is None:
+                self.status_message = "Empty comments are ignored."
+                self._close_comment_input()
+                return
+            self.state.select_comment(comment.id)
+            self._keep_selection_in_editor_view()
+            self.status_message = "Comment saved."
         self._close_comment_input()
 
     def _close_comment_input(self) -> None:
@@ -1321,6 +1377,22 @@ def _is_comment_newline(key: int | str) -> bool:
     return key in (10, "\n", "\x0a", 14, "\x0e")
 
 
+def _is_comment_line_start_key(key: int | str) -> bool:
+    return key in (1, "\x01")
+
+
+def _is_comment_line_end_key(key: int | str) -> bool:
+    return key in (5, "\x05")
+
+
+def _is_comment_word_left_key(key: int | str) -> bool:
+    return key in (COMMENT_WORD_LEFT_KEY, "\x1bb", "\x1bB") or _is_modified_left_key(key)
+
+
+def _is_comment_word_right_key(key: int | str) -> bool:
+    return key in (COMMENT_WORD_RIGHT_KEY, "\x1bf", "\x1bF") or _is_modified_right_key(key)
+
+
 def _is_ctrl_c(key: int | str) -> bool:
     return key in (3, "\x03")
 
@@ -1351,6 +1423,108 @@ def _printable_key(key: int | str) -> str | None:
     if isinstance(key, int) and 32 <= key <= 126:
         return chr(key)
     return None
+
+
+def _normalize_comment_key(key: int | str) -> int | str:
+    if isinstance(key, str) and key.startswith("\x1b") and len(key) > 1:
+        decoded = _decode_comment_escape_sequence(list(key[1:]))
+        if decoded is not None:
+            return decoded
+    return key
+
+
+def _escape_sequence_complete(sequence: list[int | str]) -> bool:
+    if not sequence:
+        return False
+    text = _key_sequence_text(sequence)
+    if text == "\x1b":
+        return False
+    if text in {"b", "B", "f", "F"}:
+        return True
+    if text.startswith("\x1b["):
+        return len(text) >= 3 and (text[-1].isalpha() or text[-1] == "~")
+    if text.startswith("\x1bO"):
+        return len(text) >= 3
+    if text.startswith("O"):
+        return len(text) >= 2
+    if text.startswith("["):
+        return len(text) >= 2 and (text[-1].isalpha() or text[-1] == "~")
+    return True
+
+
+def _decode_comment_escape_sequence(sequence: list[int | str]) -> int | str | None:
+    if len(sequence) == 1 and _is_modified_left_key(sequence[0]):
+        return COMMENT_WORD_LEFT_KEY
+    if len(sequence) == 1 and _is_modified_right_key(sequence[0]):
+        return COMMENT_WORD_RIGHT_KEY
+    if sequence == [curses.KEY_LEFT]:
+        return COMMENT_WORD_LEFT_KEY
+    if sequence == [curses.KEY_RIGHT]:
+        return COMMENT_WORD_RIGHT_KEY
+    text = _key_sequence_text(sequence)
+    if text in {"b", "B"}:
+        return COMMENT_WORD_LEFT_KEY
+    if text in {"f", "F"}:
+        return COMMENT_WORD_RIGHT_KEY
+    if text in {"\x1b[D", "\x1bOD"}:
+        return COMMENT_WORD_LEFT_KEY
+    if text in {"\x1b[C", "\x1bOC"}:
+        return COMMENT_WORD_RIGHT_KEY
+    if text in {"[D", "OD"}:
+        return curses.KEY_LEFT
+    if text in {"[C", "OC"}:
+        return curses.KEY_RIGHT
+    if text in {"[A", "OA"}:
+        return curses.KEY_UP
+    if text in {"[B", "OB"}:
+        return curses.KEY_DOWN
+    if _is_modified_horizontal_escape(text, "D"):
+        return COMMENT_WORD_LEFT_KEY
+    if _is_modified_horizontal_escape(text, "C"):
+        return COMMENT_WORD_RIGHT_KEY
+    return None
+
+
+def _is_modified_horizontal_escape(text: str, final: str) -> bool:
+    if not text.startswith("[") or not text.endswith(final):
+        return False
+    return any(modifier in text for modifier in (";3", ";5", ";7", ";9"))
+
+
+def _is_modified_left_key(key: int | str) -> bool:
+    return _modified_arrow_suffix(key, "kLFT")
+
+
+def _is_modified_right_key(key: int | str) -> bool:
+    return _modified_arrow_suffix(key, "kRIT")
+
+
+def _modified_arrow_suffix(key: int | str, prefix: str) -> bool:
+    name = _curses_key_name(key)
+    if name is None or not name.startswith(prefix):
+        return False
+    suffix = name.removeprefix(prefix)
+    return suffix.isdigit() and int(suffix) >= 3
+
+
+def _curses_key_name(key: int | str) -> str | None:
+    if not isinstance(key, int):
+        return None
+    try:
+        raw = curses.keyname(key)
+    except curses.error:
+        return None
+    return raw.decode("ascii", "ignore")
+
+
+def _key_sequence_text(sequence: list[int | str]) -> str:
+    chars: list[str] = []
+    for key in sequence:
+        if isinstance(key, str):
+            chars.append(key)
+        elif 0 <= key <= 0x10FFFF:
+            chars.append(chr(key))
+    return "".join(chars)
 
 
 def _body_width(width: int) -> int:
@@ -1403,6 +1577,43 @@ def _comment_cursor_index_for_line_column(text: str, line_index: int, column: in
     line_index = max(0, min(len(bounds) - 1, line_index))
     start, end = bounds[line_index]
     return min(end, start + max(0, column))
+
+
+def _comment_cursor_line_bounds(text: str, cursor_index: int) -> tuple[int, int]:
+    line_index, _ = _comment_cursor_line_column(text, cursor_index)
+    return _comment_line_bounds(text)[line_index]
+
+
+def _comment_word_cursor_index(text: str, cursor_index: int, direction: int) -> int:
+    cursor_index = max(0, min(len(text), cursor_index))
+    if direction < 0:
+        return _previous_comment_word_index(text, cursor_index)
+    if direction > 0:
+        return _next_comment_word_index(text, cursor_index)
+    return cursor_index
+
+
+def _previous_comment_word_index(text: str, cursor_index: int) -> int:
+    index = cursor_index
+    while index > 0 and not _comment_word_char(text[index - 1]):
+        index -= 1
+    while index > 0 and _comment_word_char(text[index - 1]):
+        index -= 1
+    return index
+
+
+def _next_comment_word_index(text: str, cursor_index: int) -> int:
+    index = cursor_index
+    length = len(text)
+    while index < length and not _comment_word_char(text[index]):
+        index += 1
+    while index < length and _comment_word_char(text[index]):
+        index += 1
+    return index
+
+
+def _comment_word_char(char: str) -> bool:
+    return char.isalnum() or char == "_"
 
 
 def _wrap_text_segments(text: str, width: int) -> list[tuple[str, int]]:

@@ -45,8 +45,8 @@ def format_review_xml(state: ReviewState) -> str:
 
 def format_review_markdown(state: ReviewState) -> str:
     lines = [
-        f"Review comments for {state.repository_root}",
-        f"Source: {state.source.label()}",
+        f"# Review comments for {state.repository_root}",
+        f"## Source: {state.source.label()}",
         "",
     ]
 
@@ -55,7 +55,7 @@ def format_review_markdown(state: ReviewState) -> str:
         comments = _comments_for_file(comments_by_file, file.path)
         if not comments:
             continue
-        lines.append(f"File: {file.display_path}")
+        lines.append(f"### File: {file.display_path}")
         lines.append("")
         for comment in comments:
             lines.extend(_format_markdown_comment(file, comment))

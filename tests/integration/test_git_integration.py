@@ -94,11 +94,51 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertIn("src/Main.java", paths)
         self.assertIn("db/schema.sql", paths)
 
+    def test_collect_branch_comparison_includes_current_uncommitted_changes(self):
+        git(self.root, "checkout", "-b", "feature")
+        write(self.root, "src/Main.java", "class Main {\n  int value() { return 2; }\n}\n")
+        git(self.root, "add", "src/Main.java")
+        git(self.root, "commit", "-m", "feature changes")
+
+        write(self.root, "web/app.ts", "export const value = 2;\n")
+        git(self.root, "add", "web/app.ts")
+        write(self.root, "config/settings.yaml", "enabled: false\n")
+        write(self.root, "draft.md", "# Draft\n")
+
+        source, files = collect_branch_comparison(self.root, "main")
+        paths = {file.path: file for file in files}
+
+        self.assertEqual(source.kind, "branch")
+        self.assertEqual(source.target_branch, "main")
+        self.assertIn("src/Main.java", paths)
+        self.assertIn("web/app.ts", paths)
+        self.assertIn("config/settings.yaml", paths)
+        self.assertIn("draft.md", paths)
+        self.assertTrue(any(line.kind == "addition" and "return 2" in line.text for line in paths["src/Main.java"].lines))
+        self.assertTrue(any(line.kind == "addition" and "value = 2" in line.text for line in paths["web/app.ts"].lines))
+        self.assertTrue(any(line.kind == "addition" and "enabled: false" in line.text for line in paths["config/settings.yaml"].lines))
+        self.assertEqual(paths["draft.md"].status, "added")
+
+    def test_collect_branch_comparison_merges_committed_and_uncommitted_same_file(self):
+        git(self.root, "checkout", "-b", "feature")
+        write(self.root, "web/app.ts", "export const value = 2;\n")
+        git(self.root, "add", "web/app.ts")
+        git(self.root, "commit", "-m", "feature change")
+        write(self.root, "web/app.ts", "export const value = 3;\n")
+
+        _, files = collect_branch_comparison(self.root, "main")
+
+        app = [file for file in files if file.path == "web/app.ts"][0]
+        additions = [line.text for line in app.lines if line.kind == "addition"]
+        self.assertIn("export const value = 2;", additions)
+        self.assertIn("export const value = 3;", additions)
+        self.assertIn("Includes committed and uncommitted changes", app.metadata)
+
     def test_default_branch_candidates_include_main(self):
         branches = default_branch_candidates(self.root)
         self.assertIn("main", branches)
 
-    def test_default_branch_candidates_prioritize_main_master_then_recent_branches(self):
+    def test_default_branch_candidates_prioritize_master_main_then_recent_branches(self):
         git(self.root, "checkout", "-b", "old-topic")
         write(self.root, "old.txt", "old\n")
         git(self.root, "add", "old.txt")
@@ -115,7 +155,7 @@ class GitIntegrationTests(unittest.TestCase):
 
         branches = default_branch_candidates(self.root)
 
-        self.assertEqual(branches[:2], ["main", "master"])
+        self.assertEqual(branches[:2], ["master", "main"])
         self.assertLess(branches.index("recent-topic"), branches.index("old-topic"))
 
     def test_collect_uncommitted_marks_binary_file(self):

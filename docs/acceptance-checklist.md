@@ -24,7 +24,7 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Branch target selection shows the current branch on the left and target branch after `->`.
 - [ ] Branch target selection shows at most five branches at once.
 - [ ] Branch target selection filters by typed substring without focusing a search box.
-- [ ] Branch target ordering puts `main` and `master` first, then sorts remaining branches by last commit date.
+- [ ] Branch target ordering puts `master` and `main` first in that order, then sorts remaining branches by last commit date.
 - [ ] Branch target selection requires double `Ctrl+C` to cancel.
 - [ ] Canceling prompts exits cleanly.
 
@@ -40,6 +40,7 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Renamed files render correctly.
 - [ ] Binary files do not crash the UI.
 - [ ] Branch comparison uses merge-base PR-style semantics.
+- [ ] Branch comparison includes committed branch changes plus current staged, unstaged, and untracked changes.
 - [ ] Broad context is visible by default.
 
 ## TUI Layout
@@ -109,10 +110,15 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] `Enter` opens inline comment input for selected code.
 - [ ] Single-line comments save correctly.
 - [ ] Multi-line comments save correctly.
+- [ ] Selected code lines use background highlighting without underline styling.
 - [ ] `Ctrl+J` inserts comment newlines immediately without waiting for another character.
 - [ ] Comment input supports `Left`/`Right` cursor movement and editing at the cursor.
 - [ ] Comment input supports `Up`/`Down` cursor movement across multiple comment lines.
+- [ ] Comment input supports `Ctrl+A`/`Ctrl+E` line and message boundary movement.
+- [ ] Comment input supports word movement through supported `Option+Left`/`Option+Right` terminal sequences.
+- [ ] Word movement is verified in a real tmux TUI session with `M-Left`/`M-Right`, cursor movement, and submitted text insertion.
 - [ ] Saved comments render inline.
+- [ ] Selected or edited comments show focus without underline styling.
 - [ ] Comment range marker is visible between line numbers and change markers.
 - [ ] Inline saved comments render only the comment body.
 - [ ] Comments remain attached after scrolling and expansion.
@@ -142,7 +148,9 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Delivery target selection starts from a cleared terminal after the TUI exits and is not mixed with stale review-pane text.
 - [ ] Available tmux panes are listed with pane ID and title.
 - [ ] Current pane is marked when detectable.
-- [ ] No-pane/stdout option is always available.
+- [ ] Save-to-file option is first and writes Markdown to `review-YYYYMMDD-HHMM.md` in the current directory.
+- [ ] Save-to-file write failures show a friendly error and print Markdown as fallback.
+- [ ] Send-to-terminal/stdout option is second and is always available.
 - [ ] Stdout delivery prints the formatted review.
 - [ ] Tmux delivery sends the same formatted review.
 - [ ] Tmux delivery presses Enter.

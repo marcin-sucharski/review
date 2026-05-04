@@ -1,6 +1,8 @@
 import io
 import os
+import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -63,7 +65,8 @@ class CliPromptTests(unittest.TestCase):
 
         title, options = select_option.call_args.args
         self.assertEqual(title, "Delivery target")
-        self.assertEqual([option.value for option in options], ["stdout", "%1"])
+        self.assertEqual([option.value for option in options], ["file", "stdout", "%1"])
+        self.assertEqual(options[0].label, "Save to file")
         self.assertTrue(select_option.call_args.kwargs["cancel_requires_double"])
         send_text.assert_called_once_with("%1", "review text\n")
         self.assertIn("Sent review to tmux pane %1.", stdout.getvalue())
@@ -78,6 +81,66 @@ class CliPromptTests(unittest.TestCase):
             self.assertEqual(cli.deliver_review("review text\n"), 0)
 
         self.assertEqual(stdout.getvalue(), "review text\n")
+
+    def test_deliver_review_offers_file_and_terminal_when_tmux_is_unavailable(self):
+        with (
+            mock.patch.object(cli, "list_panes", side_effect=cli.TmuxUnavailable("tmux is not installed")),
+            mock.patch.object(cli, "select_option", return_value="stdout") as select_option,
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            self.assertEqual(cli.deliver_review("review text\n"), 0)
+
+        _title, options = select_option.call_args.args
+        self.assertEqual([option.value for option in options], ["file", "stdout"])
+        self.assertEqual(stdout.getvalue(), "review text\n")
+
+    def test_deliver_review_save_to_file_writes_markdown_in_current_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            with (
+                mock.patch.object(cli, "list_panes", return_value=[]),
+                mock.patch.object(cli, "select_option", return_value="file"),
+                mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            ):
+                result = cli.deliver_review(
+                    "<review_feedback />\n",
+                    markdown_message="# Review comments\n",
+                    output_dir=output_dir,
+                    now=datetime(2026, 5, 4, 9, 7),
+                )
+
+            self.assertEqual(result, 0)
+            path = output_dir / "review-20260504-0907.md"
+            self.assertEqual(path.read_text(encoding="utf-8"), "# Review comments\n")
+            self.assertIn(f"Saved review to {path}.", stdout.getvalue())
+
+    def test_save_review_file_avoids_overwriting_same_minute_reviews(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            now = datetime(2026, 5, 4, 9, 7)
+
+            first = cli.save_review_file("first\n", output_dir, now)
+            second = cli.save_review_file("second\n", output_dir, now)
+
+            self.assertEqual(first.name, "review-20260504-0907.md")
+            self.assertEqual(second.name, "review-20260504-0907-2.md")
+            self.assertEqual(first.read_text(encoding="utf-8"), "first\n")
+            self.assertEqual(second.read_text(encoding="utf-8"), "second\n")
+
+    def test_deliver_review_save_to_file_failure_prints_markdown_fallback(self):
+        with (
+            mock.patch.object(cli, "list_panes", return_value=[]),
+            mock.patch.object(cli, "select_option", return_value="file"),
+            mock.patch.object(cli, "save_review_file", side_effect=OSError("read-only directory")),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+            mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            result = cli.deliver_review("<review_feedback />\n", markdown_message="# Review comments\n")
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout.getvalue(), "# Review comments\n")
+        self.assertIn("could not save review file", stderr.getvalue())
+        self.assertIn("read-only directory", stderr.getvalue())
 
     def test_menu_rendering_is_inline_and_light_theme_safe(self):
         lines = _render_menu_lines(
@@ -99,7 +162,7 @@ class CliPromptTests(unittest.TestCase):
         lines = _render_branch_menu_lines(
             "Target branch",
             "feature/current",
-            ["main", "master", "release/5", "release/4", "release/3", "release/2", "release/1"],
+            ["master", "main", "release/5", "release/4", "release/3", "release/2", "release/1"],
             0,
             "",
             use_color=True,
@@ -107,7 +170,7 @@ class CliPromptTests(unittest.TestCase):
 
         branch_lines = [line for line in lines if "feature/current ->" in line]
         self.assertEqual(len(branch_lines), 5)
-        self.assertIn("feature/current -> main", branch_lines[0])
+        self.assertIn("feature/current -> master", branch_lines[0])
         self.assertIn("2 below", "\n".join(lines))
         self.assertIn("Search:", lines[-1])
         self.assertNotIn("\x1b[7m", "\n".join(lines))
@@ -204,7 +267,7 @@ class CliPromptTests(unittest.TestCase):
 
         archive_review.assert_called_once()
         archived_message = archive_review.call_args.args[1]
-        self.assertIn("Review comments for /repo", stdout.getvalue())
+        self.assertIn("# Review comments for /repo", stdout.getvalue())
         self.assertNotIn("<review_feedback>", stdout.getvalue())
         self.assertEqual(archived_message, stdout.getvalue())
         self.assertIn("Needs work.", stdout.getvalue())
@@ -239,8 +302,41 @@ class CliPromptTests(unittest.TestCase):
         archived_message = archive_review.call_args.args[1]
         self.assertIn("<review_feedback>", stdout.getvalue())
         self.assertIn("<message>Needs work.</message>", stdout.getvalue())
-        self.assertNotIn("Review comments for /repo", stdout.getvalue())
+        self.assertNotIn("# Review comments for /repo", stdout.getvalue())
         self.assertEqual(archived_message, stdout.getvalue())
+
+    def test_main_provides_markdown_message_for_file_delivery_when_xml_is_selected(self):
+        file = create_review_file("app.py", "modified", ["old"], ["new"])
+
+        class TtyStringIO(io.StringIO):
+            def isatty(self):
+                return True
+
+        class FakeReviewApp:
+            def __init__(self, state):
+                self.state = state
+
+            def run(self):
+                self.state.add_comment("Needs work.")
+                return self.state
+
+        with (
+            mock.patch.object(cli, "repository_root", return_value=Path("/repo")),
+            mock.patch.object(cli, "collect_uncommitted", return_value=(ReviewSource("uncommitted"), [file])),
+            mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
+            mock.patch.object(cli.sys, "stdout", TtyStringIO()),
+            mock.patch.object(cli, "ReviewApp", FakeReviewApp),
+            mock.patch.object(cli, "reset_terminal_after_tui"),
+            mock.patch.object(cli, "archive_review"),
+            mock.patch.object(cli, "deliver_review", return_value=0) as deliver_review,
+        ):
+            self.assertEqual(cli.main(["--source", "uncommitted", "--output-format", "xml"]), 0)
+
+        delivered_message = deliver_review.call_args.args[0]
+        delivered_markdown = deliver_review.call_args.kwargs["markdown_message"]
+        self.assertIn("<review_feedback>", delivered_message)
+        self.assertIn("# Review comments for /repo", delivered_markdown)
+        self.assertNotIn("<review_feedback>", delivered_markdown)
 
     def test_main_archive_failure_does_not_block_stdout_delivery(self):
         file = create_review_file("app.py", "modified", ["old"], ["new"])
@@ -306,6 +402,9 @@ class CliPromptTests(unittest.TestCase):
             self.assertEqual(cli.main(["--source", "uncommitted"]), 0)
 
         deliver_review.assert_called_once()
+        delivered_message = deliver_review.call_args.args[0]
+        delivered_markdown = deliver_review.call_args.kwargs["markdown_message"]
+        self.assertEqual(delivered_message, delivered_markdown)
         self.assertIn("read-only file system", stderr.getvalue())
 
     def test_reset_terminal_after_tui_clears_screen_and_moves_to_bottom(self):
@@ -346,7 +445,7 @@ class CliPromptTests(unittest.TestCase):
         def reset_terminal_after_tui():
             events.append("reset")
 
-        def deliver_review(message):
+        def deliver_review(message, **_kwargs):
             events.append("deliver")
             return 0
 

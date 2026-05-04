@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import __version__
@@ -65,7 +66,8 @@ def main(argv: list[str] | None = None) -> int:
         if not state.comments:
             sys.stdout.write(message)
             return 0
-        return deliver_review(message)
+        markdown_message = message if args.output_format == "md" else format_review(state, "md")
+        return deliver_review(message, markdown_message=markdown_message)
     except (KeyboardInterrupt, EOFError):
         sys.stderr.write("review cancelled\n")
         return 130
@@ -102,7 +104,7 @@ def prompt_source() -> str:
         "Review source",
         [
             MenuOption("Review uncommitted changes", "uncommitted", "working tree and staged changes"),
-            MenuOption("Review PR-style changes", "branch", "compare current HEAD against a branch"),
+            MenuOption("Review PR-style changes", "branch", "compare branch and current uncommitted changes"),
         ],
     )
 
@@ -116,17 +118,54 @@ def prompt_branch(root: Path) -> str:
     return select_branch_target("Target branch", current, branches, cancel_requires_double=True)
 
 
-def deliver_review(message: str) -> int:
+def timestamped_review_path(directory: Path, now: datetime | None = None) -> Path:
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M")
+    path = directory / f"review-{stamp}.md"
+    if not path.exists():
+        return path
+
+    counter = 2
+    while True:
+        candidate = directory / f"review-{stamp}-{counter}.md"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def save_review_file(markdown_message: str, directory: Path | None = None, now: datetime | None = None) -> Path:
+    path = timestamped_review_path(directory or Path.cwd(), now)
+    path.write_text(markdown_message, encoding="utf-8")
+    return path
+
+
+def deliver_review(
+    message: str,
+    *,
+    markdown_message: str | None = None,
+    output_dir: Path | None = None,
+    now: datetime | None = None,
+) -> int:
     try:
         panes = list_panes()
-    except TmuxUnavailable as exc:
-        print(f"tmux unavailable: {exc}")
-        print(message, end="")
-        return 0
+    except TmuxUnavailable:
+        panes = []
 
-    options = [MenuOption("No tmux pane", "stdout", "print review to stdout")]
+    options = [
+        MenuOption("Save to file", "file", "write Markdown review to ./review-YYYYMMDD-HHMM.md"),
+        MenuOption("Send to terminal", "stdout", "print review to stdout"),
+    ]
     options.extend(MenuOption(pane.display(), pane.pane_id) for pane in panes)
     choice = select_option("Delivery target", options, cancel_requires_double=True)
+    if choice == "file":
+        file_message = markdown_message or message
+        try:
+            path = save_review_file(file_message, output_dir, now)
+        except OSError as exc:
+            sys.stderr.write(f"review: could not save review file: {exc}\n")
+            print(file_message, end="")
+            return 1
+        print(f"Saved review to {path}.")
+        return 0
     if choice == "stdout":
         print(message, end="")
         return 0

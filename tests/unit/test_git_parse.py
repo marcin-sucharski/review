@@ -40,6 +40,14 @@ class GitParseTests(unittest.TestCase):
                 repository_root(Path("/tmp"))
         self.assertIn("git executable not found", str(ctx.exception))
 
+    def test_common_branch_sort_puts_master_above_main(self):
+        branches = ["origin/main", "topic", "main", "origin/master", "master"]
+
+        ordered = sorted(branches, key=lambda branch: git._branch_sort_key(branch, {}))
+
+        self.assertEqual(ordered[:4], ["master", "main", "origin/master", "origin/main"])
+        self.assertEqual(ordered[4], "topic")
+
     def test_binary_review_file_creation_does_not_decode_blob_contents(self):
         with mock.patch.object(git, "_decode_lines", side_effect=AssertionError("binary data was decoded")):
             file = git._create_review_file_from_bytes(

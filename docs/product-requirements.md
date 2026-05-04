@@ -45,7 +45,7 @@ In the initial review-source menu, one `Ctrl+C` cancels the program. After that 
 
 For branch comparison, the CLI must present or accept a target branch. Branch ordering should keep common merge targets easy to reach and make recent topic branches easy to find.
 
-When selecting a PR-style target branch interactively, the branch picker shows the current branch on the left and the selected target branch on the right, for example `feature/change -> main`. It displays at most five target branches at once. `Up` and `Down` move the highlighted target. Typing any printable character filters the branch list by substring without requiring a separate search-field focus. `Backspace` edits the filter. Common target branches such as `main` and `master` should appear first when present; remaining branches are ordered by most recent commit date.
+When selecting a PR-style target branch interactively, the branch picker shows the current branch on the left and the selected target branch on the right, for example `feature/change -> main`. It displays at most five target branches at once. `Up` and `Down` move the highlighted target. Typing any printable character filters the branch list by substring without requiring a separate search-field focus. `Backspace` edits the filter. Common target branches should appear first when present, with `master` above `main`; remaining branches are ordered by most recent commit date.
 
 ## Review Sources
 
@@ -67,13 +67,15 @@ The implementation must define and test the exact untracked-file behavior. The p
 
 ### Branch Comparison
 
-The branch comparison review source compares the current `HEAD` against the merge base with the selected target branch.
+The branch comparison review source compares the current branch against the merge base with the selected target branch and also includes the current uncommitted changes on top of the branch. This includes staged changes, unstaged changes, and untracked files. A PR-style review must never omit local uncommitted work just because the user selected branch comparison.
 
 Preferred Git model:
 
 ```bash
 git merge-base HEAD <target-branch>
-git diff --find-renames --find-copies <merge-base>...HEAD
+git diff --cached --find-renames --find-copies <merge-base> --
+git diff --find-renames --find-copies --
+git ls-files --others --exclude-standard -z
 ```
 
 The UI should describe this as PR-style comparison because it mirrors the usual "changes introduced by this branch" workflow.
@@ -177,6 +179,8 @@ The comment input behaves like a GitHub-style line comment:
 - `Ctrl+J` inserts a newline and the blank line appears immediately,
 - `Left` and `Right` move the insertion cursor by character,
 - `Up` and `Down` move the insertion cursor between comment lines while preserving the intended column,
+- `Ctrl+A` and `Ctrl+E` move to the current line boundary, or the whole-message boundary when already at that line boundary,
+- `Option+Left` and `Option+Right` move by word for terminals that send supported Meta or modified-arrow sequences,
 - typed text and Backspace edit at the current insertion cursor,
 - `Enter` submits the comment,
 - `Esc` cancels the comment,
@@ -192,7 +196,7 @@ Comment rendering must show:
 - selected context lines,
 - comment body.
 
-The delivered non-empty review message defaults to Markdown and can be changed with `--output-format` / `-o`. Supported output formats are `md` and `xml`. Markdown output must use stable headings and safe fenced blocks. XML output must use tags to clearly separate metadata, files, review comments, line ranges, context lines, and comment bodies. The selected format must be used consistently for stdout, tmux delivery, and the archived review message.
+The delivered non-empty review message defaults to Markdown and can be changed with `--output-format` / `-o`. Supported output formats are `md` and `xml`. Markdown output must use stable headings and safe fenced blocks. XML output must use tags to clearly separate metadata, files, review comments, line ranges, context lines, and comment bodies. The selected format must be used consistently for stdout, tmux delivery, and the archived review message. The explicit save-to-file delivery target always writes Markdown, regardless of the stdout/tmux output format.
 
 The review pane must include a short visual element to the left of each inline comment indicating the referenced section of code.
 
@@ -244,8 +248,11 @@ After the TUI closes, the CLI must restore the terminal to a clean prompt state 
 
 At the end of the review, the tool prompts for a delivery target:
 
-- one of the available tmux panes,
-- no pane, meaning print the review text to stdout.
+- save to file, meaning write Markdown to `review-YYYYMMDD-HHMM.md` in the current directory,
+- send to terminal, meaning print the review text to stdout,
+- one of the available tmux panes.
+
+The save-to-file option must be listed first. The send-to-terminal option must be listed second. Tmux panes, when available, are listed after those two local delivery options.
 
 Tmux pane choices must include:
 
@@ -254,9 +261,11 @@ Tmux pane choices must include:
 - session/window/pane location,
 - current command when available.
 
+When save to file is selected, the tool writes a timestamped Markdown review file in the process current directory. If a file for the same minute already exists, the tool may add a numeric suffix to avoid overwriting an existing review. If the file cannot be written, the CLI must show a friendly error and print the Markdown review text so the comments are not lost.
+
 When a tmux pane is selected, the tool sends the full review message and presses Enter.
 
-When no pane is selected, the same review message is printed to stdout and the process exits.
+When send to terminal is selected, the same formatted review message is printed to stdout and the process exits.
 
 Every non-empty review is saved before delivery, regardless of whether the user chooses tmux or stdout. The archive is a JSON file in:
 

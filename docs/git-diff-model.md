@@ -51,16 +51,18 @@ Large or binary untracked files should be marked as binary or skipped with a cle
 
 ## Review Source: Branch Comparison
 
-The branch comparison source compares `HEAD` against the merge base with the selected target branch.
+The branch comparison source compares the current branch against the merge base with the selected target branch and includes the current uncommitted changes on top of the branch. Staged changes, unstaged changes, and untracked files must be included in the same PR-style review view.
 
 Recommended commands:
 
 ```bash
 git merge-base HEAD <target-branch>
-git diff --find-renames --find-copies --function-context <merge-base>...HEAD
+git diff --cached --find-renames --find-copies --function-context <merge-base> --
+git diff --find-renames --find-copies --function-context --
+git ls-files --others --exclude-standard -z
 ```
 
-The three-dot model is preferred because it matches pull-request style comparison.
+The merge-base model is preferred because it matches pull-request style comparison while still allowing the index and working tree to be layered on top. The staged/index section is `merge-base -> index`, so it includes committed branch changes and staged local changes. The unstaged section is `index -> worktree`, so it includes only current working-tree edits.
 
 The selected target branch should be recorded in the session source metadata.
 
@@ -77,7 +79,7 @@ The list should remove duplicates and symbolic refs such as `origin/HEAD`.
 
 Target branch ordering:
 
-1. common target branches first, with local `main` and `master` ahead of remote `*/main` and `*/master`,
+1. common target branches first, with local `master` above local `main`, followed by remote `*/master` and `*/main`,
 2. all remaining branches by descending last-commit date,
 3. branch name as a stable tie-breaker.
 
@@ -176,7 +178,7 @@ The parser should know the full file content when possible so expansion rows can
 
 For uncommitted changes, full file content can come from the working tree and old content from Git object lookups.
 
-For branch comparison, full new content can come from `HEAD:<path>`, and old content can come from `<merge-base>:<path>`.
+For branch comparison, full new content can come from the index or working tree when uncommitted changes exist, and old content can come from `<merge-base>:<path>` or the index depending on the section being rendered.
 
 Expansion rows should reveal unchanged context lines around changed regions without requiring a new Git diff command.
 

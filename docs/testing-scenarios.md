@@ -57,7 +57,10 @@ Fixture files should cover required languages:
 | Same text is added in staged and final worktree diffs at different lines | Both additions remain visible |
 | User selects uncommitted changes with untracked text file | Shows file as added |
 | User selects uncommitted changes with untracked binary file | Shows file as binary or skipped with explanation |
-| User selects branch comparison | Compares merge base to `HEAD` |
+| User selects branch comparison | Compares merge base to current index/worktree, including committed branch changes |
+| User selects branch comparison with staged changes | PR-style review includes staged local changes |
+| User selects branch comparison with unstaged changes | PR-style review includes unstaged local changes |
+| User selects branch comparison with untracked files | PR-style review includes untracked files |
 | Branch comparison target does not exist | Friendly error |
 | Git command fails | Friendly error without raw traceback |
 | User presses `Ctrl+C` in startup review-source prompt | Exits cleanly on first press |
@@ -74,11 +77,12 @@ Fixture files should cover required languages:
 | Many branches exist | Branch picker shows only five target branches at a time |
 | User types in branch picker | Branch list filters by substring without focusing a search box |
 | Branch picker renders comparison | Current branch appears on the left and target branch appears after `->` |
-| Common target branches exist | `main` and `master` appear before date-sorted topic branches |
+| Common target branches exist | `master` and `main` appear before date-sorted topic branches, with `master` first |
 | Topic branches have different commit dates | More recently committed branches appear earlier |
 | Current branch has commits not on target | PR-style diff includes feature commits |
+| Current branch has uncommitted changes on top of feature commits | PR-style diff includes both feature commits and current uncommitted changes |
 | Target branch is ancestor of current branch | Diff includes changes since branch point |
-| Current branch equals target branch | No changes found |
+| Current branch equals target branch with no uncommitted changes | No changes found |
 
 ## Git Diff Parsing Tests
 
@@ -176,6 +180,8 @@ Fixture files should cover required languages:
 | Select file in file pane | Review pane scrolls to file |
 | Comments exist and file pane is shown | Comment list appears under file tree grouped by file |
 | Select comment in comment list | Review pane focuses the inline saved comment |
+| Select or edit a saved comment | Focus background is visible without underline styling |
+| Select a code line or range | Selection background is visible without underline styling |
 | Modified-file tree overflows | Bottom footer shows how many rows are below |
 | Comment list overflows | Bottom footer shows how many rows are below |
 | Scroll review pane | File pane highlight updates |
@@ -206,6 +212,10 @@ Fixture files should cover required languages:
 | `Ctrl+J` in comment input | Inserts newline and blank row renders immediately |
 | `Left`/`Right` in comment input | Cursor moves within text and edits occur at that position |
 | `Up`/`Down` in comment input | Cursor moves between comment lines and preserves column where possible |
+| `Ctrl+A` in comment input | First press moves to current line start, second press moves to message start |
+| `Ctrl+E` in comment input | First press moves to current line end, second press moves to message end |
+| `Option+Left`/`Option+Right` in comment input | Cursor moves by word for supported terminal escape sequences |
+| `Alt`/`Meta` left/right in a real tmux TUI session | Cursor x-position moves by word and inserted text lands at the word-moved cursor |
 | `Enter` in comment input | Saves comment |
 | Submit comment | Comment appears inline |
 | Press `:` | Command mode opens |
@@ -263,6 +273,9 @@ Fixture files should cover required languages:
 | Long line | Preserved or wrapped only by terminal, not formatter |
 | Branch comparison source | Target branch included |
 | Uncommitted source | Source labeled as uncommitted changes |
+| Save-to-file delivery with default format | Writes Markdown to `review-YYYYMMDD-HHMM.md` in the current directory |
+| Save-to-file delivery while `--output-format xml` is selected | File still contains Markdown, while stdout/tmux delivery would use XML |
+| Save-to-file write failure | Friendly error is shown and Markdown review text is printed as fallback |
 
 ## Review Archive Tests
 
@@ -287,6 +300,7 @@ Fixture files should cover required languages:
 | Current pane detected | Current pane marked |
 | tmux missing | Stdout fallback available |
 | tmux list fails | Friendly error and stdout fallback |
+| tmux missing during delivery selection | Save-to-file and terminal delivery remain selectable |
 | Selected pane disappears | Send failure handled |
 | Review text contains quotes | Sent literally |
 | Review text contains newlines | Sent as one buffer |
@@ -304,6 +318,7 @@ These tests should run only when tmux is available.
 | Send Enter | Target receives newline |
 | Kill target before send | Error handled |
 | Run outside tmux with tmux server active | Panes can still be listed or stdout fallback works |
+| Run real TUI under tmux and send `M-Left`/`M-Right` | Comment editor cursor moves by word and submitted review text proves insertion happened at the moved cursor |
 
 ## Manual End-To-End Scenarios
 
@@ -318,11 +333,12 @@ These tests should run only when tmux is available.
 7. Press `T` and verify the file tree appears.
 8. Add single-line and multi-line comments.
 9. Quit with `:q`.
-10. Select no tmux pane.
-11. Verify stdout contains grouped comments with line references and context.
-12. Verify a review JSON archive was written and contains the same review message.
-13. Repeat with `--output-format xml` and verify stdout and archive contain XML rather than Markdown.
-14. Repeat the quit flow from a visible review pane and verify the delivery menu appears on a cleared terminal screen at the prompt area, with no stale TUI panes or previous review output mixed into the selector.
+10. Select save to file and verify `review-YYYYMMDD-HHMM.md` is written in the current directory with Markdown content.
+11. Repeat and select send to terminal.
+12. Verify stdout contains grouped comments with line references and context.
+13. Verify a review JSON archive was written and contains the same review message.
+14. Repeat with `--output-format xml`, verify stdout and archive contain XML, and verify save-to-file still writes Markdown.
+15. Repeat the quit flow from a visible review pane and verify the delivery menu appears on a cleared terminal screen at the prompt area, with no stale TUI panes or previous review output mixed into the selector.
 
 ### Scenario 2: Branch Review To Tmux Pane
 
@@ -330,14 +346,17 @@ These tests should run only when tmux is available.
 2. Commit `main`.
 3. Create a feature branch.
 4. Modify TypeScript, Java, and SQL files.
-5. Start tmux with two panes.
-6. Run `review` in one pane.
-7. Select branch comparison against `main`.
-8. Add comments.
-9. Quit with `:q`.
-10. Verify a review JSON archive was written.
-11. Select the other pane.
-12. Verify review feedback appears in the target pane and Enter is sent.
+5. Commit one feature change.
+6. Add one staged change, one unstaged change, and one untracked file.
+7. Start tmux with two panes.
+8. Run `review` in one pane.
+9. Select branch comparison against `main`.
+10. Verify the review includes the committed feature change, staged change, unstaged change, and untracked file.
+11. Add comments.
+12. Quit with `:q`.
+13. Verify a review JSON archive was written.
+14. Select the other pane.
+15. Verify review feedback appears in the target pane and Enter is sent.
 
 ### Scenario 3: Expansion And Sticky Header
 
@@ -392,6 +411,7 @@ Before considering implementation complete, run:
 - real tmux tests when available,
 - manual uncommitted review,
 - manual branch review,
+- manual branch review with committed, staged, unstaged, and untracked changes,
 - manual stdout delivery,
 - manual tmux delivery.
 - manual archive verification.

@@ -146,6 +146,27 @@ class TuiStateContractTests(unittest.TestCase):
         app._handle_comment_key("\r")
         self.assertEqual(state.comments[0].body, "Zażółć 😀")
 
+    def test_new_comment_is_focused_after_submit_so_enter_edits_it(self):
+        file = create_review_file("src/app.js", "modified", ["a"], ["A"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        app = ReviewApp(state)
+
+        app._handle_review_key(curses.KEY_ENTER)
+        for key in ["F", "i", "x", "\r"]:
+            app._handle_comment_key(key)
+
+        comment = state.comments[0]
+        self.assertFalse(app.comment_mode)
+        self.assertEqual(state.selection_kind, "comment")
+        self.assertEqual(state.selected_comment_id, comment.id)
+        self.assertEqual(state.comment_for_selection(), comment)
+
+        app._handle_review_key(curses.KEY_ENTER)
+
+        self.assertTrue(app.comment_mode)
+        self.assertEqual(app.editing_comment_id, comment.id)
+        self.assertEqual(app.comment_buffer, "Fix")
+
     def test_ctrl_j_in_comment_input_inserts_newline(self):
         file = create_review_file("src/app.js", "modified", ["a"], ["A"])
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
@@ -180,6 +201,110 @@ class TuiStateContractTests(unittest.TestCase):
         app._handle_comment_key("!")
 
         self.assertEqual(app.comment_buffer, "abc\ndeZf\nxy!")
+
+    def test_comment_input_ctrl_a_moves_to_line_then_message_start(self):
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+        app.comment_buffer = "one two\nthree four"
+        app.comment_cursor_index = len("one two\nthr")
+
+        app._handle_comment_key("\x01")
+        self.assertEqual(app.comment_cursor_index, len("one two\n"))
+
+        app._handle_comment_key("\x01")
+        self.assertEqual(app.comment_cursor_index, 0)
+
+    def test_comment_input_ctrl_e_moves_to_line_then_message_end(self):
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+        app.comment_buffer = "one two\nthree four"
+        app.comment_cursor_index = len("one")
+
+        app._handle_comment_key("\x05")
+        self.assertEqual(app.comment_cursor_index, len("one two"))
+
+        app._handle_comment_key("\x05")
+        self.assertEqual(app.comment_cursor_index, len(app.comment_buffer))
+
+    def test_comment_input_option_arrows_move_by_word(self):
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+        app.comment_buffer = "one two\nthree_four!"
+        app.comment_cursor_index = len(app.comment_buffer)
+
+        app._handle_comment_key(tui_app.COMMENT_WORD_LEFT_KEY)
+        self.assertEqual(app.comment_cursor_index, len("one two\n"))
+
+        app._handle_comment_key(tui_app.COMMENT_WORD_LEFT_KEY)
+        self.assertEqual(app.comment_cursor_index, len("one "))
+
+        app._handle_comment_key(tui_app.COMMENT_WORD_RIGHT_KEY)
+        self.assertEqual(app.comment_cursor_index, len("one two"))
+
+        app._handle_comment_key(tui_app.COMMENT_WORD_RIGHT_KEY)
+        self.assertEqual(app.comment_cursor_index, len("one two\nthree_four"))
+
+    def test_comment_input_full_option_arrow_sequences_move_by_word(self):
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+        app.comment_buffer = "one two three"
+        app.comment_cursor_index = len(app.comment_buffer)
+
+        app._handle_comment_key("\x1b[1;3D")
+        self.assertEqual(app.comment_cursor_index, len("one two "))
+
+        with mock.patch.object(tui_app.curses, "keyname", return_value=b"kLFT3"):
+            app._handle_comment_key(555)
+        self.assertEqual(app.comment_cursor_index, len("one "))
+
+        app._handle_comment_key("\x1b[1;3C")
+        self.assertEqual(app.comment_cursor_index, len("one two"))
+
+        with mock.patch.object(tui_app.curses, "keyname", return_value=b"kRIT3"):
+            app._handle_comment_key(570)
+        self.assertEqual(app.comment_cursor_index, len("one two three"))
+
+    def test_comment_input_meta_normal_arrow_sequences_move_by_word(self):
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+        app.comment_buffer = "one two three"
+        app.comment_cursor_index = len(app.comment_buffer)
+
+        app._handle_comment_key("\x1b\x1b[D")
+        self.assertEqual(app.comment_cursor_index, len("one two "))
+
+        app.comment_cursor_index = len("one ")
+        app._handle_comment_key("\x1b\x1b[C")
+        self.assertEqual(app.comment_cursor_index, len("one two"))
+
+    def test_comment_input_reads_option_arrow_escape_sequences(self):
+        class FakeScreen:
+            def __init__(self, keys):
+                self.keys = list(keys)
+                self.nodelay_values = []
+
+            def get_wch(self):
+                if not self.keys:
+                    raise curses.error()
+                return self.keys.pop(0)
+
+            def nodelay(self, value):
+                self.nodelay_values.append(value)
+
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+
+        self.assertEqual(app._read_key(FakeScreen(["\x1b", "b"])), tui_app.COMMENT_WORD_LEFT_KEY)
+        self.assertEqual(
+            app._read_key(FakeScreen(["\x1b", "[", "1", ";", "3", "C"])),
+            tui_app.COMMENT_WORD_RIGHT_KEY,
+        )
+        self.assertEqual(app._read_key(FakeScreen(["\x1b", curses.KEY_LEFT])), tui_app.COMMENT_WORD_LEFT_KEY)
+        self.assertEqual(
+            app._read_key(FakeScreen(["\x1b", "\x1b", "[", "D"])),
+            tui_app.COMMENT_WORD_LEFT_KEY,
+        )
+        self.assertEqual(app._read_key(FakeScreen(["\x1b"])), "\x1b")
 
     def test_comment_input_backspace_deletes_before_cursor(self):
         app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
@@ -732,7 +857,32 @@ class TuiStateContractTests(unittest.TestCase):
         self.assertNotEqual(app._background_color("comment"), app._background_color("deletion"))
         self.assertNotEqual(app._background_color("comment"), app._background_color("selection"))
 
-    def test_anchor_and_active_rows_have_distinct_selection_attrs(self):
+    def test_selected_multiline_comment_uses_background_without_underlines(self):
+        class FakeScreen:
+            def addnstr(self, y, x, text, n, attr):
+                return None
+
+        file = create_review_file("plain.txt", "modified", ["a"], ["A"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        comment = state.add_comment("Line one\nLine two")
+        self.assertIsNotNone(comment)
+        state.select_comment(comment.id)
+        app = ReviewApp(state)
+        app.content_height = 20
+        comment_item = next(item for item in state.document_items() if item.kind == "comment")
+        styles = []
+
+        def fake_style(role, background=None, modifiers=curses.A_NORMAL):
+            styles.append((role, background, modifiers))
+            return modifiers
+
+        with mock.patch.object(app, "_style", side_effect=fake_style):
+            app._draw_review_item(FakeScreen(), 0, 0, 80, comment_item, state.active_document_index() or 0, True)
+
+        self.assertTrue(any(background == "selection" for _, background, _ in styles))
+        self.assertTrue(all(not modifiers & curses.A_UNDERLINE for _, _, modifiers in styles))
+
+    def test_selected_code_rows_use_background_without_underlines(self):
         class FakeScreen:
             def __init__(self):
                 self.calls = []
@@ -750,8 +900,9 @@ class TuiStateContractTests(unittest.TestCase):
         active_screen = FakeScreen()
         app._draw_code_line(anchor_screen, 0, 0, 80, items[0], False)
         app._draw_code_line(active_screen, 0, 0, 80, items[1], True)
-        self.assertTrue(any(attr & curses.A_BOLD for _, attr in anchor_screen.calls))
-        self.assertTrue(any(attr & curses.A_UNDERLINE for _, attr in active_screen.calls))
+        attrs = [attr for _, attr in anchor_screen.calls + active_screen.calls]
+        self.assertTrue(attrs)
+        self.assertTrue(all(not attr & curses.A_UNDERLINE for attr in attrs))
 
     def test_selected_modified_lines_use_diff_selection_backgrounds(self):
         class FakeScreen:
