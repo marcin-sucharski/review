@@ -51,7 +51,7 @@ docs/
 
 `review_state.py` owns the mutable review session state: focused pane, selected file, selected line range, expanded context, and saved comments.
 
-`format_review.py` turns saved comments and referenced context into the final feedback message. XML is the default output format, and Markdown is available through the CLI output-format option.
+`format_review.py` turns saved comments and referenced context into the final feedback message. Markdown is the default output format, and XML is available through the CLI output-format option.
 
 `archive.py` persists completed non-empty reviews as JSON under the XDG local data directory.
 

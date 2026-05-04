@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -8,11 +9,11 @@ from . import __version__
 from .archive import archive_review
 from .errors import GitCommandError, NoChangesFound, NotAGitRepository, ReviewError, TmuxSendError, TmuxUnavailable
 from .format_review import format_review
-from .git import collect_branch_comparison, collect_uncommitted, default_branch_candidates, repository_root
+from .git import collect_branch_comparison, collect_uncommitted, current_branch, default_branch_candidates, repository_root
 from .review_state import ReviewState
 from .tmux import list_panes, send_text
 from .tui.app import ReviewApp
-from .tui.menu import MenuOption, select_option
+from .tui.menu import MenuOption, select_branch_target, select_option
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,8 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output-format",
         choices=["xml", "md"],
-        default="xml",
-        help="Review message output format. Defaults to xml.",
+        default="md",
+        help="Review message output format. Defaults to md.",
     )
     parser.add_argument("--stdout", action="store_true", help="Print review comments instead of prompting for tmux delivery.")
     parser.add_argument(
@@ -53,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
             if not sys.stdin.isatty() or not sys.stdout.isatty():
                 raise ReviewError("interactive TUI requires a terminal")
             ReviewApp(state).run()
+            reset_terminal_after_tui()
 
         message = format_review(state, args.output_format)
         if state.comments:
@@ -86,6 +88,15 @@ def archive_review_best_effort(state: ReviewState, message: str) -> None:
         sys.stderr.write(f"review: could not archive review: {exc}\n")
 
 
+def reset_terminal_after_tui(output_stream=None) -> None:
+    stream = output_stream or sys.stdout
+    if not getattr(stream, "isatty", lambda: False)():
+        return
+    height = shutil.get_terminal_size(fallback=(80, 24)).lines
+    stream.write(f"\x1b[0m\x1b[?25h\x1b[2J\x1b[{height};1H")
+    stream.flush()
+
+
 def prompt_source() -> str:
     return select_option(
         "Review source",
@@ -97,10 +108,12 @@ def prompt_source() -> str:
 
 
 def prompt_branch(root: Path) -> str:
+    current = current_branch(root)
     branches = default_branch_candidates(root)
+    branches = [branch for branch in branches if branch != current]
     if not branches:
         raise ReviewError("no branches are available for comparison")
-    return select_option("Target branch", [MenuOption(branch, branch) for branch in branches], cancel_requires_double=True)
+    return select_branch_target("Target branch", current, branches, cancel_requires_double=True)
 
 
 def deliver_review(message: str) -> int:

@@ -25,7 +25,7 @@ If the command fails, the CLI exits with a user-friendly "not a Git repository" 
 
 ## Review Source: Uncommitted Changes
 
-The uncommitted source should include staged and unstaged changes.
+The uncommitted source should include staged and unstaged changes in one unified review view.
 
 Recommended command strategy:
 
@@ -35,7 +35,9 @@ git diff --cached --find-renames --find-copies --function-context
 git status --porcelain=v1 -z
 ```
 
-The implementation must merge staged and unstaged records carefully if the same file appears in both.
+The implementation must merge staged and unstaged records carefully if the same file appears in both. A mixed file should appear as one `ReviewFile` without separate staged/unstaged section headers. The collection model should still preserve Git's three-state semantics: staged changes are read as `HEAD` to index, and unstaged changes are read as index to working tree.
+
+When merging those three-state records into the unified view, the implementation must not treat same-text additions or deletions at different line positions as duplicates. A staged line that is later undone or shifted still needs to remain visible if the same text appears elsewhere in the final working tree diff.
 
 Alternative command strategies are acceptable if tests prove they correctly handle staged-only, unstaged-only, and mixed changes.
 
@@ -73,15 +75,13 @@ git branch -r --format='%(refname:short)'
 
 The list should remove duplicates and symbolic refs such as `origin/HEAD`.
 
-Default branch detection order:
+Target branch ordering:
 
-1. upstream branch of the current branch,
-2. remote default branch from `refs/remotes/origin/HEAD`,
-3. `origin/main`,
-4. `main`,
-5. `origin/master`,
-6. `master`,
-7. first available branch.
+1. common target branches first, with local `main` and `master` ahead of remote `*/main` and `*/master`,
+2. all remaining branches by descending last-commit date,
+3. branch name as a stable tie-breaker.
+
+The current branch should be shown as the left side of the comparison in the interactive selector and omitted from the selectable target list.
 
 ## Diff Context
 

@@ -11,7 +11,7 @@ from .review_state import ReviewState
 OutputFormat = str
 
 
-def format_review(state: ReviewState, output_format: OutputFormat = "xml") -> str:
+def format_review(state: ReviewState, output_format: OutputFormat = "md") -> str:
     if not state.comments:
         return "No review comments.\n"
     if output_format == "xml":
@@ -217,5 +217,5 @@ def _is_xml_char(char: str) -> bool:
     )
 
 
-def write_review_to_path(state: ReviewState, path: Path, output_format: OutputFormat = "xml") -> None:
+def write_review_to_path(state: ReviewState, path: Path, output_format: OutputFormat = "md") -> None:
     path.write_text(format_review(state, output_format), encoding="utf-8")

@@ -8,12 +8,12 @@ The exact formatting can evolve, but stdout delivery and tmux delivery must use 
 
 The same generated message must also be written to the local review archive for every non-empty review.
 
-The CLI defaults to XML output. Users may choose the format explicitly:
+The CLI defaults to Markdown output. Users may choose the format explicitly:
 
 ```text
-review --output-format xml
 review --output-format md
-review -o md
+review --output-format xml
+review -o xml
 ```
 
 ## Required Content
@@ -125,7 +125,7 @@ The formatter should preserve indentation in code text. If the copied source con
 
 ## Markdown Message Shape
 
-Markdown output is available with `--output-format md` or `-o md`. It is intended for agents or panes where plain Markdown is preferred over XML.
+Markdown output is the default and is also available explicitly with `--output-format md` or `-o md`. It is intended for agents or panes where plain Markdown is preferred.
 
 Markdown output uses stable headings, file sections, line labels, fenced code context, and fenced comment bodies:
 
@@ -213,7 +213,7 @@ Required JSON shape:
 {
   "path": "/absolute/path/to/repository",
   "branch": "feature/review",
-  "review_message": "<review_feedback>\n..."
+  "review_message": "Review comments for /absolute/path/to/repository\n..."
 }
 ```
 
@@ -235,7 +235,7 @@ The formatter must handle:
 
 Tmux delivery must send text as literal content, not execute it as shell syntax.
 
-## Example Full Output
+## Example Full XML Output
 
 ```xml
 <review_feedback>

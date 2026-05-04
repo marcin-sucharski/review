@@ -15,6 +15,10 @@ On startup, the CLI asks whether the user wants to review:
 
 After the selection, the CLI detects the corresponding Git changes and opens a terminal user interface.
 
+For pull-request style reviews, the target branch picker shows the current branch on the left and the target branch after `->`. It shows five branch choices at a time, supports `Up`/`Down` selection, and filters by typed substring immediately.
+
+For uncommitted reviews, staged and unstaged changes are collected together and shown as one unified review view. A file that has both staged and unstaged edits appears once, without separate staged and unstaged sections.
+
 The TUI uses a review-first layout. The left navigation pane is hidden by default to maximize code space, and `T` shows or hides it. When visible, the TUI has two vertical panes:
 
 - the left pane is split between a tree/list of modified files and a grouped list of review comments,
@@ -39,7 +43,7 @@ When the review ends, the CLI asks where to send the review:
 - a selected tmux pane, chosen from available panes with titles and pane IDs, or
 - no pane, in which case the tool prints the final review text to standard output and exits.
 
-When a tmux pane is selected, the tool sends the generated review feedback to that pane and presses Enter. Non-empty review feedback is XML-structured by default and can be switched to Markdown with `--output-format md` or `-o md`. Both formats group comments by file and include referenced line numbers, selected context lines, and the user comment body.
+When a tmux pane is selected, the tool sends the generated review feedback to that pane and presses Enter. Non-empty review feedback is Markdown by default and can be switched to XML with `--output-format xml` or `-o xml`. Both formats group comments by file and include referenced line numbers, selected context lines, and the user comment body.
 
 Every non-empty review is also saved before delivery. The archive is a JSON file under `$XDG_DATA_HOME/review/reviews` or, when `XDG_DATA_HOME` is not set, `~/.local/share/review/reviews`. Each file contains the repository path, current Git branch, and exact generated review message.
 

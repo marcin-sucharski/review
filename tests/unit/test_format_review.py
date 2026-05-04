@@ -11,13 +11,13 @@ class FormatReviewTests(unittest.TestCase):
     def test_empty_review_message(self):
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [])
         self.assertEqual(format_review(state), "No review comments.\n")
-        self.assertEqual(format_review(state, "md"), "No review comments.\n")
+        self.assertEqual(format_review(state, "xml"), "No review comments.\n")
 
-    def test_single_comment_output(self):
+    def test_xml_single_comment_output(self):
         file = create_review_file("src/app.ts", "modified", ["const a = 1;"], ["const a = 2;"])
         state = ReviewState(Path("/repo"), ReviewSource("branch", target_branch="main"), [file])
         state.add_comment("Use a named constant.")
-        output = format_review(state)
+        output = format_review(state, "xml")
         root = ET.fromstring(output)
 
         self.assertEqual(root.tag, "review_feedback")
@@ -47,7 +47,7 @@ class FormatReviewTests(unittest.TestCase):
         state.select_range("src/app.py", added_row, added_row)
         state.add_comment("Comment with surrounding context.")
 
-        output = format_review(state)
+        output = format_review(state, "xml")
         root = ET.fromstring(output)
         context = root.find("review_comments/file/review_comment/context").text
 
@@ -62,7 +62,7 @@ class FormatReviewTests(unittest.TestCase):
         file = create_review_file("src/app.js", "deleted", ["const a = 1;"], [])
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
         state.add_comment("This deletion needs explanation.")
-        output = format_review(state)
+        output = format_review(state, "xml")
         root = ET.fromstring(output)
         line_range = root.find("review_comments/file/review_comment/location/line_range")
         context = root.find("review_comments/file/review_comment/context").text
@@ -77,7 +77,7 @@ class FormatReviewTests(unittest.TestCase):
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
         state.move_selection(1)
         state.add_comment("Comment with XML chars: <tag attr=\"value\"> & text")
-        output = format_review(state)
+        output = format_review(state, "xml")
         root = ET.fromstring(output)
         context = root.find("review_comments/file/review_comment/context").text
 
@@ -94,7 +94,7 @@ class FormatReviewTests(unittest.TestCase):
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
         state.move_selection(1)
         state.add_comment("CDATA split")
-        output = format_review(state)
+        output = format_review(state, "xml")
         root = ET.fromstring(output)
 
         self.assertIn("]]]]><![CDATA[>", output)
@@ -105,7 +105,7 @@ class FormatReviewTests(unittest.TestCase):
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
         state.move_selection(1)
         state.add_comment("Bad control:\x02")
-        output = format_review(state)
+        output = format_review(state, "xml")
         root = ET.fromstring(output)
 
         self.assertIn("new\uFFFDvalue", root.find("review_comments/file/review_comment/context").text)
@@ -115,20 +115,20 @@ class FormatReviewTests(unittest.TestCase):
         file = create_review_file("README.md", "modified", ["old"], ["new"])
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
         state.add_comment("Comment with a fence:\n~~~\n```")
-        output = format_review(state)
+        output = format_review(state, "xml")
         root = ET.fromstring(output)
 
         self.assertEqual(root.find("review_comments/file/review_comment/message").text, "Comment with a fence:\n~~~\n```")
         self.assertNotIn("~~~text", output)
         self.assertNotIn("```markdown", output)
 
-    def test_markdown_output_format_uses_fenced_context_and_comments(self):
+    def test_default_markdown_output_format_uses_fenced_context_and_comments(self):
         file = create_review_file("src/app.ts", "modified", ["const a = 1;"], ["const a = 2;"])
         state = ReviewState(Path("/repo"), ReviewSource("branch", target_branch="main"), [file])
         state.extend_selection(1)
         state.add_comment("Use a named constant.")
 
-        output = format_review(state, "md")
+        output = format_review(state)
 
         self.assertIn("Review comments for /repo", output)
         self.assertIn("Source: branch comparison against main", output)
@@ -144,7 +144,7 @@ class FormatReviewTests(unittest.TestCase):
         state.move_selection(1)
         state.add_comment("Comment with fence:\n~~~")
 
-        output = format_review(state, "md")
+        output = format_review(state)
 
         self.assertIn("`````markdown", output)
         self.assertIn("~~~~text\nComment with fence:\n~~~\n~~~~", output)
@@ -165,7 +165,7 @@ class FormatReviewTests(unittest.TestCase):
         state.add_comment("First")
         state.select_file("b.py")
         state.add_comment("Second")
-        output = format_review(state)
+        output = format_review(state, "xml")
         root = ET.fromstring(output)
         paths = [file.attrib["path"] for file in root.findall("review_comments/file")]
 

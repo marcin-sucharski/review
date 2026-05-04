@@ -10,6 +10,10 @@ from review.tui.app import ReviewApp, _comment_title, _wrap_text, _wrap_text_seg
 from review.tui.highlight import syntax_spans
 
 
+def _empty_draw_frame():
+    return tui_app.DrawFrame(None, None, frozenset(), None, {})
+
+
 class TuiStateContractTests(unittest.TestCase):
     def test_document_contains_file_headers_code_expansions_and_comments(self):
         old = [f"line {index}" for index in range(240)]
@@ -153,6 +157,41 @@ class TuiStateContractTests(unittest.TestCase):
 
         self.assertEqual(state.comments[0].body, "A\nB")
 
+    def test_comment_input_left_right_arrows_edit_at_cursor(self):
+        file = create_review_file("src/app.js", "modified", ["a"], ["A"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        app = ReviewApp(state)
+        app.comment_mode = True
+
+        for key in ["a", "c", curses.KEY_LEFT, "b", curses.KEY_RIGHT, "d", "\r"]:
+            app._handle_comment_key(key)
+
+        self.assertEqual(state.comments[0].body, "abcd")
+
+    def test_comment_input_up_down_arrows_preserve_column_across_lines(self):
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+        app.comment_buffer = "abc\ndef\nxy"
+        app.comment_cursor_index = len(app.comment_buffer)
+
+        app._handle_comment_key(curses.KEY_UP)
+        app._handle_comment_key("Z")
+        app._handle_comment_key(curses.KEY_DOWN)
+        app._handle_comment_key("!")
+
+        self.assertEqual(app.comment_buffer, "abc\ndeZf\nxy!")
+
+    def test_comment_input_backspace_deletes_before_cursor(self):
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+        app.comment_buffer = "abc"
+        app.comment_cursor_index = 1
+
+        app._handle_comment_key("\b")
+
+        self.assertEqual(app.comment_buffer, "bc")
+        self.assertEqual(app.comment_cursor_index, 0)
+
     def test_comment_input_trailing_newline_draws_blank_line_immediately(self):
         class FakeScreen:
             def __init__(self):
@@ -171,6 +210,41 @@ class TuiStateContractTests(unittest.TestCase):
         rails = [(y, text) for y, x, text in screen.calls if x == 5 and text == "|"]
         self.assertEqual(used, 2)
         self.assertEqual(rails, [(0, "|"), (1, "|")])
+
+    def test_comment_input_cursor_tracks_multiline_buffer_end(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+
+            def addnstr(self, y, x, text, n, attr):
+                self.calls.append((y, x, text[:n]))
+
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.content_height = 20
+        screen = FakeScreen()
+
+        app._draw_comment(screen, 3, 4, 80, "alpha\n", saved=False, cursor_index=len("alpha\n"))
+
+        self.assertEqual(app.comment_cursor, (4, 4 + tui_app.GUTTER_WIDTH))
+
+    def test_draw_makes_comment_input_cursor_visible(self):
+        class FakeScreen:
+            def __init__(self):
+                self.moves = []
+
+            def move(self, y, x):
+                self.moves.append((y, x))
+
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+        app.comment_mode = True
+        app.comment_cursor = (5, 12)
+        screen = FakeScreen()
+
+        with mock.patch.object(tui_app.curses, "curs_set") as curs_set:
+            app._apply_cursor(screen, 20, 80)
+
+        curs_set.assert_called_once_with(1)
+        self.assertEqual(screen.moves, [(5, 12)])
 
     def test_comment_mode_draw_uses_cached_selection_snapshot(self):
         class FakeScreen:
@@ -322,7 +396,7 @@ class TuiStateContractTests(unittest.TestCase):
             def addnstr(self, y, x, text, n, attr):
                 return None
 
-        file = create_review_file("src/app.py", "modified", ["return 1"], ["return 2"])
+        file = create_review_file(".gitignore", "modified", ["old"], ["*.py"])
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
         app = ReviewApp(state)
         app.content_height = 20
@@ -338,11 +412,11 @@ class TuiStateContractTests(unittest.TestCase):
             if item.kind == "code" and item.line is not None and item.line.kind == "addition"
         )
         with mock.patch.object(app, "_style", side_effect=fake_style):
-            app._draw_code_line(FakeScreen(), 0, 0, 80, added_item, False)
+            app._draw_code_line(FakeScreen(), 0, 0, 80, added_item, False, _empty_draw_frame())
 
         self.assertIn(("plain", "addition", curses.A_NORMAL), drawn_styles)
         self.assertIn(("line-number", "addition", curses.A_NORMAL), drawn_styles)
-        self.assertTrue(any(role in {"keyword", "number"} and background == "addition" for role, background, _ in drawn_styles))
+        self.assertTrue(any(role in {"operator", "string"} and background == "addition" for role, background, _ in drawn_styles))
         self.assertNotEqual(app._foreground_color("string", "addition"), curses.COLOR_GREEN)
 
     def test_center_command_scrolls_selection_to_middle_of_review_view(self):
@@ -450,6 +524,47 @@ class TuiStateContractTests(unittest.TestCase):
         self.assertTrue(any(y > 6 and text.startswith("1 First comment") and text.endswith("...") for y, text in rendered))
         self.assertTrue(any(y > 6 and text.startswith("2 Second comment") for y, text in rendered))
         self.assertTrue(any(y > 6 and text == "tests/test_app.py" for y, text in rendered))
+
+    def test_file_pane_draws_bottom_scroll_indicator_when_more_files_follow(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+
+            def addnstr(self, y, x, text, n, attr):
+                self.calls.append((y, text[:n]))
+
+        files = [create_review_file(f"file_{index}.py", "modified", ["a"], ["b"]) for index in range(6)]
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), files)
+        app = ReviewApp(state)
+        app.left_width = 28
+        screen = FakeScreen()
+
+        app._draw_file_tree_region(screen, 0, 4)
+
+        rendered = [(y, text.strip()) for y, text in screen.calls]
+        self.assertIn((3, "v 4 more below"), rendered)
+
+    def test_comment_pane_draws_bottom_scroll_indicator_when_more_comments_follow(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+
+            def addnstr(self, y, x, text, n, attr):
+                self.calls.append((y, text[:n]))
+
+        file = create_review_file("src/app.py", "added", [], [f"line {index}" for index in range(6)])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        for index in range(6):
+            state.select_range("src/app.py", index, index)
+            state.add_comment(f"Comment {index}")
+        app = ReviewApp(state)
+        app.left_width = 28
+        screen = FakeScreen()
+
+        app._draw_comment_list_region(screen, 0, 4)
+
+        rendered = [(y, text.strip()) for y, text in screen.calls]
+        self.assertIn((3, "v 5 more below"), rendered)
 
     def test_comment_pane_navigation_focuses_comment_in_review_pane(self):
         file = create_review_file("src/app.py", "added", [], ["alpha", "beta"])
@@ -561,6 +676,35 @@ class TuiStateContractTests(unittest.TestCase):
         self.assertNotIn("comment on", rendered)
         self.assertTrue(any(x == 5 and text == "|" for _, x, text in screen.calls))
 
+    def test_comment_edit_draws_live_keyboard_changes_before_submit(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+
+            def addnstr(self, y, x, text, n, attr):
+                self.calls.append((y, x, text[:n]))
+
+        file = create_review_file("plain.txt", "modified", ["a"], ["A"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        comment = state.add_comment("Original")
+        self.assertIsNotNone(comment)
+        comment_index = next(index for index, item in enumerate(state.document_items()) if item.kind == "comment")
+        state.select_document_index(comment_index)
+        app = ReviewApp(state)
+        app.content_height = 20
+
+        app._handle_review_key(curses.KEY_ENTER)
+        app._handle_comment_key("\b")
+        comment_item = next(item for item in state.document_items() if item.kind == "comment")
+        screen = FakeScreen()
+
+        app._draw_review_item(screen, 0, 0, 80, comment_item, comment_index, True)
+
+        rendered = "".join(text for _, _, text in screen.calls)
+        self.assertIn("Origina", rendered)
+        self.assertNotIn("Original", rendered)
+        self.assertEqual(state.comments[0].body, "Original")
+
     def test_saved_comment_rows_use_distinct_background(self):
         class FakeScreen:
             def addnstr(self, y, x, text, n, attr):
@@ -608,6 +752,33 @@ class TuiStateContractTests(unittest.TestCase):
         app._draw_code_line(active_screen, 0, 0, 80, items[1], True)
         self.assertTrue(any(attr & curses.A_BOLD for _, attr in anchor_screen.calls))
         self.assertTrue(any(attr & curses.A_UNDERLINE for _, attr in active_screen.calls))
+
+    def test_selected_modified_lines_use_diff_selection_backgrounds(self):
+        class FakeScreen:
+            def addnstr(self, y, x, text, n, attr):
+                return None
+
+        file = create_review_file("plain.txt", "modified", ["a"], ["A"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        app = ReviewApp(state)
+        app.content_height = 20
+        items = [item for item in state.document_items() if item.kind == "code"]
+        styles = []
+
+        def fake_style(role, background=None, modifiers=curses.A_NORMAL):
+            styles.append((role, background, modifiers))
+            return curses.A_NORMAL
+
+        with mock.patch.object(app, "_style", side_effect=fake_style):
+            for item in items:
+                app._draw_code_line(FakeScreen(), 0, 0, 80, item, True)
+
+        backgrounds = {background for _, background, _ in styles}
+        self.assertIn("addition-selection", backgrounds)
+        self.assertIn("deletion-selection", backgrounds)
+        self.assertNotIn("addition", backgrounds)
+        self.assertNotIn("deletion", backgrounds)
+        self.assertNotEqual(tui_app.BACKGROUND_COLORS["selection"][0], 153)
 
 
 if __name__ == "__main__":

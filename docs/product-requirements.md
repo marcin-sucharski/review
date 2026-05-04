@@ -43,7 +43,9 @@ When interactive source, branch, or delivery choices are needed, the CLI should 
 
 In the initial review-source menu, one `Ctrl+C` cancels the program. After that first source choice is accepted, cancellation is intentionally harder: branch selection, delivery selection, and the TUI require two consecutive `Ctrl+C` presses before exiting.
 
-For branch comparison, the CLI must present or accept a target branch. The default branch detection should prefer the repository's configured upstream/default branch when available, then fall back to common branch names such as `main` and `master`.
+For branch comparison, the CLI must present or accept a target branch. Branch ordering should keep common merge targets easy to reach and make recent topic branches easy to find.
+
+When selecting a PR-style target branch interactively, the branch picker shows the current branch on the left and the selected target branch on the right, for example `feature/change -> main`. It displays at most five target branches at once. `Up` and `Down` move the highlighted target. Typing any printable character filters the branch list by substring without requiring a separate search-field focus. `Backspace` edits the filter. Common target branches such as `main` and `master` should appear first when present; remaining branches are ordered by most recent commit date.
 
 ## Review Sources
 
@@ -58,6 +60,8 @@ The uncommitted review source includes:
 - renamed files,
 - copied files if Git reports them,
 - optionally untracked files if the implementation supports producing content for them.
+
+Staged and unstaged changes for the same path must be shown as a single unified file entry, not as separate staged and unstaged review sections.
 
 The implementation must define and test the exact untracked-file behavior. The preferred behavior is to include untracked text files as added files.
 
@@ -83,6 +87,8 @@ Pressing `T` shows or hides the left navigation pane. When the left pane is visi
 The left pane is split vertically. The upper region lists modified files as a tree with collapsed directory chains when no modified file exists between the directories. The lower region lists saved review comments grouped by file.
 
 Each comment-list row must show a line number or line range plus a shortened preview of the comment body. Selecting a comment from this list scrolls the right review pane to the corresponding inline comment.
+
+If either left-pane region has more rows below the visible viewport, the bottom of that region must show a compact scroll indicator with a count, for example `v 10 more below`. When scrolled down, the footer may also show how many rows are above.
 
 The right review pane shows a continuous view of all changed files. It is not a separate per-file detail page.
 
@@ -169,6 +175,9 @@ The comment input behaves like a GitHub-style line comment:
 - it is visually attached to the referenced line or range,
 - it supports multi-line text,
 - `Ctrl+J` inserts a newline and the blank line appears immediately,
+- `Left` and `Right` move the insertion cursor by character,
+- `Up` and `Down` move the insertion cursor between comment lines while preserving the intended column,
+- typed text and Backspace edit at the current insertion cursor,
 - `Enter` submits the comment,
 - `Esc` cancels the comment,
 - the saved comment appears inline below the referenced range.
@@ -183,7 +192,7 @@ Comment rendering must show:
 - selected context lines,
 - comment body.
 
-The delivered non-empty review message defaults to XML and can be changed with `--output-format` / `-o`. Supported output formats are `xml` and `md`. XML output must use tags to clearly separate metadata, files, review comments, line ranges, context lines, and comment bodies. Markdown output must use stable headings and safe fenced blocks. The selected format must be used consistently for stdout, tmux delivery, and the archived review message.
+The delivered non-empty review message defaults to Markdown and can be changed with `--output-format` / `-o`. Supported output formats are `md` and `xml`. Markdown output must use stable headings and safe fenced blocks. XML output must use tags to clearly separate metadata, files, review comments, line ranges, context lines, and comment bodies. The selected format must be used consistently for stdout, tmux delivery, and the archived review message.
 
 The review pane must include a short visual element to the left of each inline comment indicating the referenced section of code.
 
@@ -228,6 +237,8 @@ If unsent comments exist, quitting proceeds to delivery target selection.
 If no comments exist, the TUI exits immediately without confirmation and the CLI prints the empty-review message when using stdout/no-TUI paths.
 
 Inside the TUI, `Ctrl+C` is not a single-key quit. The first press shows a warning, and only a second consecutive `Ctrl+C` exits. Any other key clears the pending interrupt.
+
+After the TUI closes, the CLI must restore the terminal to a clean prompt state before rendering delivery selection or stdout output. Stale review panes, command text, and cursor positions from the curses screen must not overlap the delivery menu or generated review message.
 
 ## Delivery
 

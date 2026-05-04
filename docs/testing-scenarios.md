@@ -53,7 +53,8 @@ Fixture files should cover required languages:
 | Run inside Git repo with no changes | Reports no changes, exits cleanly |
 | User selects uncommitted changes with unstaged file | Opens review with modified file |
 | User selects uncommitted changes with staged file | Opens review with staged file |
-| User selects uncommitted changes with staged and unstaged same file | Shows combined or clearly represented changes |
+| User selects uncommitted changes with staged and unstaged same file | Shows one unified file view with no staged/unstaged section split |
+| Same text is added in staged and final worktree diffs at different lines | Both additions remain visible |
 | User selects uncommitted changes with untracked text file | Shows file as added |
 | User selects uncommitted changes with untracked binary file | Shows file as binary or skipped with explanation |
 | User selects branch comparison | Compares merge base to `HEAD` |
@@ -70,6 +71,11 @@ Fixture files should cover required languages:
 | Only local `main` exists | `main` is offered |
 | Only local `master` exists | `master` is offered |
 | Multiple local and remote branches exist | Duplicates removed, symbolic refs removed |
+| Many branches exist | Branch picker shows only five target branches at a time |
+| User types in branch picker | Branch list filters by substring without focusing a search box |
+| Branch picker renders comparison | Current branch appears on the left and target branch appears after `->` |
+| Common target branches exist | `main` and `master` appear before date-sorted topic branches |
+| Topic branches have different commit dates | More recently committed branches appear earlier |
 | Current branch has commits not on target | PR-style diff includes feature commits |
 | Target branch is ancestor of current branch | Diff includes changes since branch point |
 | Current branch equals target branch | No changes found |
@@ -170,6 +176,8 @@ Fixture files should cover required languages:
 | Select file in file pane | Review pane scrolls to file |
 | Comments exist and file pane is shown | Comment list appears under file tree grouped by file |
 | Select comment in comment list | Review pane focuses the inline saved comment |
+| Modified-file tree overflows | Bottom footer shows how many rows are below |
+| Comment list overflows | Bottom footer shows how many rows are below |
 | Scroll review pane | File pane highlight updates |
 | Long file scrolls | Sticky header shows current file |
 | Next file reaches top | Sticky header updates |
@@ -196,6 +204,8 @@ Fixture files should cover required languages:
 | Review pane `Enter` on expansion row | Context expands |
 | `Esc` in comment input | Input cancels |
 | `Ctrl+J` in comment input | Inserts newline and blank row renders immediately |
+| `Left`/`Right` in comment input | Cursor moves within text and edits occur at that position |
+| `Up`/`Down` in comment input | Cursor moves between comment lines and preserves column where possible |
 | `Enter` in comment input | Saves comment |
 | Submit comment | Comment appears inline |
 | Press `:` | Command mode opens |
@@ -239,14 +249,14 @@ Fixture files should cover required languages:
 | Scenario | Expected Result |
 | --- | --- |
 | No comments | Empty-review behavior matches policy |
-| One comment | Default XML output includes repo, source, file, line, code, comment |
-| XML parseability | Default non-empty output parses as XML |
+| One comment | Default Markdown output includes repo, source, file, line, code, comment |
+| Markdown output default | No `--output-format` emits Markdown headings and fenced blocks |
 | Multi-line comment range | XML `line_range` includes start/end and label text |
 | Deleted-line comment | XML `line_range` uses `side="old"` |
 | Multiple files | XML output grouped by `file` elements |
 | Multiple comments same file | `review_comment` elements sorted by line number |
 | Code contains XML metacharacters | Formatter escapes text and output remains parseable |
-| Markdown output option | `--output-format md` emits Markdown headings and fenced blocks |
+| XML output option | `--output-format xml` emits parseable XML |
 | Markdown fence collision | Fences expand when code or comments contain backticks or tildes |
 | Code contains triple backticks | Backticks are preserved as text without Markdown fence handling |
 | Unicode comment and code | Preserved |
@@ -311,7 +321,8 @@ These tests should run only when tmux is available.
 10. Select no tmux pane.
 11. Verify stdout contains grouped comments with line references and context.
 12. Verify a review JSON archive was written and contains the same review message.
-13. Repeat with `--output-format md` and verify stdout and archive contain Markdown rather than XML.
+13. Repeat with `--output-format xml` and verify stdout and archive contain XML rather than Markdown.
+14. Repeat the quit flow from a visible review pane and verify the delivery menu appears on a cleared terminal screen at the prompt area, with no stale TUI panes or previous review output mixed into the selector.
 
 ### Scenario 2: Branch Review To Tmux Pane
 

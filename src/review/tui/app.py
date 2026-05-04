@@ -23,9 +23,11 @@ SHIFT_DOWN_KEYS = {getattr(curses, "KEY_SF", -1002), getattr(curses, "KEY_SDOWN"
 BOLD_ROLES = {"keyword", "tag", "heading", "error", "rail", "emphasis"}
 BACKGROUND_COLORS = {
     "addition": (194, curses.COLOR_GREEN),
+    "addition-selection": (193, curses.COLOR_GREEN),
     "deletion": (224, curses.COLOR_RED),
+    "deletion-selection": (223, curses.COLOR_RED),
     "comment": (230, curses.COLOR_YELLOW),
-    "selection": (153, curses.COLOR_CYAN),
+    "selection": (229, curses.COLOR_WHITE),
 }
 FOREGROUND_WITH_BACKGROUND = {
     "plain": curses.COLOR_BLACK,
@@ -97,6 +99,12 @@ class CommentPaneRow:
     comment: ReviewComment | None = None
 
 
+@dataclass(frozen=True)
+class ScrollRegion:
+    visible_height: int
+    footer_y: int | None
+
+
 class ReviewApp:
     def __init__(self, state: ReviewState):
         self.state = state
@@ -109,6 +117,8 @@ class ReviewApp:
         self.command_buffer = ""
         self.comment_mode = False
         self.comment_buffer = ""
+        self.comment_cursor_index = 0
+        self.comment_cursor_goal_column: int | None = None
         self.editing_comment_id: str | None = None
         self.status_message = INITIAL_STATUS_MESSAGE
         self.quit_requested = False
@@ -116,6 +126,7 @@ class ReviewApp:
         self.interrupt_armed = False
         self.mouse_drag_anchor: tuple[str, int] | None = None
         self.screen_map: dict[int, int] = {}
+        self.comment_cursor: tuple[int, int] | None = None
         self.left_width = 32
         self.content_height = 0
         self._color_pairs: dict[tuple[int, int], int] = {}
@@ -129,7 +140,7 @@ class ReviewApp:
         return self.state
 
     def _main(self, stdscr) -> None:
-        curses.curs_set(0)
+        self._set_cursor_visibility(0)
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
@@ -161,10 +172,12 @@ class ReviewApp:
         self._next_color_pair = 1
 
     def _draw(self, stdscr) -> None:
+        self.comment_cursor = None
         stdscr.erase()
         height, width = stdscr.getmaxyx()
         if height < 12 or width < 60:
             self._safe_addnstr(stdscr, 0, 0, "Terminal is too small for review. Resize to at least 60x12.", width - 1, curses.A_BOLD)
+            self._apply_cursor(stdscr, height, width)
             stdscr.refresh()
             return
 
@@ -178,6 +191,7 @@ class ReviewApp:
             self.focus = "review"
         self._draw_review_pane(stdscr, height, width)
         self._draw_status(stdscr, height, width)
+        self._apply_cursor(stdscr, height, width)
         stdscr.refresh()
 
     def _draw_file_pane(self, stdscr, height: int, width: int) -> None:
@@ -202,6 +216,8 @@ class ReviewApp:
         if visible_height <= 0:
             return
         rows = self._file_tree_rows()
+        region = self._scroll_region(y, height, len(rows))
+        visible_height = region.visible_height
         comment_counts = self._comment_counts_by_file()
         selected_row = file_tree_row_index(rows, self.state.file_pane_index) if rows else 0
         self.file_scroll = max(0, min(self.file_scroll, max(0, len(rows) - visible_height)))
@@ -219,6 +235,7 @@ class ReviewApp:
             if row.kind == "directory":
                 row_attr |= curses.A_BOLD | self._style("muted")
             self._safe_addnstr(stdscr, screen_row, 0, text.ljust(self.left_width), self.left_width, row_attr)
+        self._draw_scroll_footer(stdscr, region, self.file_scroll, len(rows), visible_height)
 
     def _draw_comment_list_region(self, stdscr, y: int, height: int) -> None:
         if height <= 0:
@@ -235,6 +252,8 @@ class ReviewApp:
             self.comment_pane_index = 0
             self._safe_addnstr(stdscr, y + 1, 0, " No comments".ljust(self.left_width), self.left_width, self._style("muted"))
             return
+        region = self._scroll_region(y, height, len(rows))
+        visible_height = region.visible_height
         selected_row = self._selected_comment_pane_row_index(rows)
         self._ensure_comment_pane_scroll(rows, selected_row, visible_height)
         for screen_row, row_index in enumerate(range(self.comment_scroll, min(len(rows), self.comment_scroll + visible_height)), start=y + 1):
@@ -247,6 +266,29 @@ class ReviewApp:
             if row.kind == "file":
                 row_attr |= curses.A_BOLD | self._style("muted")
             self._safe_addnstr(stdscr, screen_row, 0, text.ljust(self.left_width), self.left_width, row_attr)
+        self._draw_scroll_footer(stdscr, region, self.comment_scroll, len(rows), visible_height)
+
+    @staticmethod
+    def _scroll_region(y: int, height: int, row_count: int) -> ScrollRegion:
+        body_height = max(0, height - 1)
+        if height >= 3 and row_count > body_height:
+            return ScrollRegion(max(0, body_height - 1), y + height - 1)
+        return ScrollRegion(body_height, None)
+
+    def _draw_scroll_footer(
+        self,
+        stdscr,
+        region: ScrollRegion,
+        scroll: int,
+        row_count: int,
+        visible_height: int,
+    ) -> None:
+        if region.footer_y is None:
+            return
+        above = max(0, scroll)
+        below = max(0, row_count - scroll - visible_height)
+        text = _scroll_footer_text(above, below)
+        self._safe_addnstr(stdscr, region.footer_y, 0, text.ljust(self.left_width), self.left_width, self._style("muted"))
 
     def _ensure_comment_pane_scroll(self, rows: list[CommentPaneRow], selected_row: int, visible_height: int) -> None:
         self.comment_scroll = max(0, min(self.comment_scroll, max(0, len(rows) - visible_height)))
@@ -389,7 +431,18 @@ class ReviewApp:
             attr = self._style("link") | (curses.A_REVERSE if selected else curses.A_NORMAL)
             return self._draw_full_width_row(stdscr, y, x, width, f"   ... {item.expansion.label()} ...", attr)
         if item.kind == "comment" and item.comment is not None:
-            return self._draw_comment(stdscr, y, x, width, item.comment.body, saved=True, selected=selected)
+            editing = self.comment_mode and self.editing_comment_id == item.comment.id
+            body = self.comment_buffer if editing else item.comment.body
+            return self._draw_comment(
+                stdscr,
+                y,
+                x,
+                width,
+                body or " ",
+                saved=not editing,
+                selected=selected,
+                cursor_index=self.comment_cursor_index if editing else None,
+            )
         if item.kind == "code" and item.line is not None and item.row_index is not None:
             return self._draw_code_item(stdscr, y, x, width, item, selected, frame)
         return 1
@@ -401,7 +454,15 @@ class ReviewApp:
     def _draw_code_item(self, stdscr, y: int, x: int, width: int, item: DocumentItem, selected: bool, frame: DrawFrame) -> int:
         used = self._draw_code_line(stdscr, y, x, width, item, selected, frame)
         if self._should_draw_comment_input(item, frame):
-            used += self._draw_comment(stdscr, y + used, x, width, self.comment_buffer or " ", saved=False)
+            used += self._draw_comment(
+                stdscr,
+                y + used,
+                x,
+                width,
+                self.comment_buffer or " ",
+                saved=False,
+                cursor_index=self.comment_cursor_index,
+            )
         return used
 
     def _should_draw_comment_input(self, item: DocumentItem, frame: DrawFrame) -> bool:
@@ -481,24 +542,43 @@ class ReviewApp:
         self._safe_addnstr(stdscr, y, x + 5, rail, 1, rail_attr)
         self._safe_addnstr(stdscr, y, x + 6, marker + " ", 2, self._style("line-number", background, modifiers))
 
-    def _draw_comment(self, stdscr, y: int, x: int, width: int, text: str, *, saved: bool, selected: bool = False) -> int:
+    def _draw_comment(
+        self,
+        stdscr,
+        y: int,
+        x: int,
+        width: int,
+        text: str,
+        *,
+        saved: bool,
+        selected: bool = False,
+        cursor_index: int | None = None,
+    ) -> int:
         lines = _comment_display_lines(text)
         modifiers = curses.A_UNDERLINE if selected else curses.A_NORMAL
         background = self._comment_background(saved, selected)
         attr = self._style("warning", background, modifiers) | (curses.A_BOLD if not saved else curses.A_NORMAL)
         row_attr = self._style("plain", background, modifiers)
         used = 0
+        line_start = 0
         for line in lines:
             if y + used >= self.content_height:
                 break
-            chunks = _wrap_text(line, _body_width(width))
-            for chunk in chunks:
+            chunks = _wrap_text_segments(line, _body_width(width))
+            for chunk, source_offset in chunks:
                 if y + used >= self.content_height:
                     break
                 self._safe_addnstr(stdscr, y + used, x, " " * max(0, width - 1), width - 1, row_attr)
                 self._draw_comment_gutter(stdscr, y + used, x, background=background, selected=selected)
                 self._safe_addnstr(stdscr, y + used, x + GUTTER_WIDTH, chunk, width - GUTTER_WIDTH - 1, attr)
+                if cursor_index is not None:
+                    chunk_start = line_start + source_offset
+                    chunk_end = chunk_start + len(chunk)
+                    if chunk_start <= cursor_index <= chunk_end:
+                        cursor_column = cursor_index - chunk_start
+                        self.comment_cursor = (y + used, min(x + width - 1, x + GUTTER_WIDTH + cursor_column))
                 used += 1
+            line_start += len(line) + 1
         return max(1, used)
 
     @staticmethod
@@ -544,6 +624,24 @@ class ReviewApp:
         y = height - 1
         text, attr = self._status_line()
         self._safe_addnstr(stdscr, y, 0, text.ljust(width), width - 1, attr)
+
+    def _apply_cursor(self, stdscr, height: int, width: int) -> None:
+        if self.comment_mode and self.comment_cursor is not None:
+            self._set_cursor_visibility(1)
+            y, x = self.comment_cursor
+            try:
+                stdscr.move(max(0, min(height - 1, y)), max(0, min(width - 1, x)))
+            except curses.error:
+                pass
+        else:
+            self._set_cursor_visibility(0)
+
+    @staticmethod
+    def _set_cursor_visibility(visibility: int) -> None:
+        try:
+            curses.curs_set(visibility)
+        except curses.error:
+            pass
 
     def _status_line(self) -> tuple[str, int]:
         if self.interrupt_armed:
@@ -711,20 +809,61 @@ class ReviewApp:
             self._close_comment_input()
             return
         if _is_backspace(key):
-            self.comment_buffer = self.comment_buffer[:-1]
+            self._delete_comment_character_before_cursor()
+            return
+        if key == curses.KEY_LEFT:
+            self._move_comment_cursor_horizontal(-1)
+            return
+        if key == curses.KEY_RIGHT:
+            self._move_comment_cursor_horizontal(1)
+            return
+        if key == curses.KEY_UP:
+            self._move_comment_cursor_vertical(-1)
+            return
+        if key == curses.KEY_DOWN:
+            self._move_comment_cursor_vertical(1)
             return
         if _is_comment_newline(key):
-            self.comment_buffer += "\n"
+            self._insert_comment_text("\n")
             return
         if _is_enter(key):
             self._submit_comment_input()
             return
         if key in (9, "\t"):
-            self.comment_buffer += "\t"
+            self._insert_comment_text("\t")
             return
         text = _printable_key(key)
         if text is not None:
-            self.comment_buffer += text
+            self._insert_comment_text(text)
+
+    def _insert_comment_text(self, text: str) -> None:
+        self.comment_cursor_index = max(0, min(len(self.comment_buffer), self.comment_cursor_index))
+        self.comment_buffer = self.comment_buffer[: self.comment_cursor_index] + text + self.comment_buffer[self.comment_cursor_index :]
+        self.comment_cursor_index += len(text)
+        self.comment_cursor_goal_column = None
+
+    def _delete_comment_character_before_cursor(self) -> None:
+        self.comment_cursor_index = max(0, min(len(self.comment_buffer), self.comment_cursor_index))
+        if self.comment_cursor_index == 0:
+            return
+        self.comment_buffer = self.comment_buffer[: self.comment_cursor_index - 1] + self.comment_buffer[self.comment_cursor_index :]
+        self.comment_cursor_index -= 1
+        self.comment_cursor_goal_column = None
+
+    def _move_comment_cursor_horizontal(self, delta: int) -> None:
+        self.comment_cursor_index = max(0, min(len(self.comment_buffer), self.comment_cursor_index + delta))
+        self.comment_cursor_goal_column = None
+
+    def _move_comment_cursor_vertical(self, delta: int) -> None:
+        line_index, column = _comment_cursor_line_column(self.comment_buffer, self.comment_cursor_index)
+        if self.comment_cursor_goal_column is None:
+            self.comment_cursor_goal_column = column
+        target_line = line_index + delta
+        self.comment_cursor_index = _comment_cursor_index_for_line_column(
+            self.comment_buffer,
+            target_line,
+            self.comment_cursor_goal_column,
+        )
 
     def _submit_comment_input(self) -> None:
         if self.editing_comment_id:
@@ -741,6 +880,8 @@ class ReviewApp:
     def _close_comment_input(self) -> None:
         self.comment_mode = False
         self.comment_buffer = ""
+        self.comment_cursor_index = 0
+        self.comment_cursor_goal_column = None
         self.editing_comment_id = None
 
     def _build_command_handlers(self) -> dict[str, CommandHandler]:
@@ -771,6 +912,8 @@ class ReviewApp:
     def _start_new_comment(self) -> None:
         self.comment_mode = True
         self.comment_buffer = ""
+        self.comment_cursor_index = 0
+        self.comment_cursor_goal_column = None
         self.editing_comment_id = None
 
     def _start_edit_selected_comment(self) -> None:
@@ -781,6 +924,8 @@ class ReviewApp:
         self.comment_mode = True
         self.editing_comment_id = comment.id
         self.comment_buffer = comment.body
+        self.comment_cursor_index = len(self.comment_buffer)
+        self.comment_cursor_goal_column = None
 
     def _command_delete_comment(self) -> None:
         self._delete_selected_comment()
@@ -1055,10 +1200,12 @@ class ReviewApp:
 
     @staticmethod
     def _line_background(line: ReviewLine | None, selected: bool) -> str | None:
-        if line is not None and line.kind in {"addition", "deletion"}:
-            return line.kind
+        if selected and line is not None and line.kind in {"addition", "deletion"}:
+            return f"{line.kind}-selection"
         if selected:
             return "selection"
+        if line is not None and line.kind in {"addition", "deletion"}:
+            return line.kind
         return None
 
     def _style(self, role: str, background: str | None = None, modifiers: int = curses.A_NORMAL) -> int:
@@ -1145,6 +1292,15 @@ def _terminal_color(preferred_256: int, fallback: int) -> int:
     return fallback
 
 
+def _scroll_footer_text(above: int, below: int) -> str:
+    parts: list[str] = []
+    if above:
+        parts.append(f"^ {above} above")
+    if below:
+        parts.append(f"v {below} more below")
+    return "  ".join(parts)
+
+
 def _mouse_mask(name: str) -> int:
     return getattr(curses, name, 0)
 
@@ -1215,6 +1371,38 @@ def _comment_display_lines(text: str) -> list[str]:
     if text == "":
         return [" "]
     return text.split("\n")
+
+
+def _comment_line_bounds(text: str) -> list[tuple[int, int]]:
+    starts = [0]
+    for index, char in enumerate(text):
+        if char == "\n":
+            starts.append(index + 1)
+    bounds: list[tuple[int, int]] = []
+    for line_index, start in enumerate(starts):
+        if line_index + 1 < len(starts):
+            end = starts[line_index + 1] - 1
+        else:
+            end = len(text)
+        bounds.append((start, end))
+    return bounds
+
+
+def _comment_cursor_line_column(text: str, cursor_index: int) -> tuple[int, int]:
+    cursor_index = max(0, min(len(text), cursor_index))
+    bounds = _comment_line_bounds(text)
+    for line_index, (start, end) in enumerate(bounds):
+        if cursor_index <= end:
+            return line_index, cursor_index - start
+    start, end = bounds[-1]
+    return len(bounds) - 1, min(end - start, cursor_index - start)
+
+
+def _comment_cursor_index_for_line_column(text: str, line_index: int, column: int) -> int:
+    bounds = _comment_line_bounds(text)
+    line_index = max(0, min(len(bounds) - 1, line_index))
+    start, end = bounds[line_index]
+    return min(end, start + max(0, column))
 
 
 def _wrap_text_segments(text: str, width: int) -> list[tuple[str, int]]:

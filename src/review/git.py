@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,8 +11,7 @@ from .errors import GitCommandError, NoChangesFound, NotAGitRepository
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 INDEX_REF = "INDEX"
-MERGED_BINARY_METADATA = "Includes staged and worktree changes"
-MERGED_TEXT_METADATA = "Contains separate staged and worktree changes"
+MERGED_UNCOMMITTED_METADATA = "Includes staged and unstaged changes"
 
 
 @dataclass(frozen=True)
@@ -56,23 +56,33 @@ def has_head(root: Path) -> bool:
 
 
 def default_branch_candidates(root: Path) -> list[str]:
-    candidates: list[str] = []
-    upstream = run_git(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], check=False)
-    if upstream.returncode == 0 and upstream.stdout.strip():
-        candidates.append(upstream.stdout.strip())
-    origin_head = run_git(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], check=False)
-    if origin_head.returncode == 0 and origin_head.stdout.strip():
-        candidates.append(origin_head.stdout.strip())
-    candidates.extend(["origin/main", "main", "origin/master", "master"])
-    available = set(list_branches(root))
-    ordered: list[str] = []
-    for candidate in candidates:
-        if candidate in available and candidate not in ordered:
-            ordered.append(candidate)
-    for branch in sorted(available):
-        if branch not in ordered:
-            ordered.append(branch)
-    return ordered
+    commit_dates = branch_commit_dates(root)
+    return sorted(list_branches(root), key=lambda branch: _branch_sort_key(branch, commit_dates))
+
+
+def branch_commit_dates(root: Path) -> dict[str, int]:
+    result = run_git(
+        root,
+        ["for-each-ref", "--format=%(refname:short)\t%(committerdate:unix)", "refs/heads", "refs/remotes"],
+        check=False,
+    )
+    if result.returncode != 0:
+        return {}
+    dates: dict[str, int] = {}
+    for line in result.stdout.splitlines():
+        name, _, timestamp = line.partition("\t")
+        name = name.strip()
+        if not name or name.endswith("/HEAD") or name == "HEAD":
+            continue
+        try:
+            dates[name] = int(timestamp.strip())
+        except ValueError:
+            dates[name] = 0
+    return dates
+
+
+def _branch_sort_key(branch: str, commit_dates: dict[str, int]) -> tuple[int, int, str]:
+    return _common_branch_priority(branch), -commit_dates.get(branch, 0), branch
 
 
 def list_branches(root: Path) -> list[str]:
@@ -85,6 +95,18 @@ def list_branches(root: Path) -> list[str]:
                 if branch and not branch.endswith("/HEAD") and branch != "HEAD":
                     branches.add(branch)
     return sorted(branches)
+
+
+def _common_branch_priority(branch: str) -> int:
+    if branch == "main":
+        return 0
+    if branch == "master":
+        return 1
+    if branch.endswith("/main"):
+        return 2
+    if branch.endswith("/master"):
+        return 3
+    return 4
 
 
 def current_branch(root: Path) -> str:
@@ -318,16 +340,19 @@ def _build_merged_uncommitted_file(root: Path, cached_entry: NameStatus, worktre
     if worktree is None:
         return cached
     if cached.binary or worktree.binary:
-        worktree.metadata = _merged_metadata(cached, worktree, MERGED_BINARY_METADATA)
+        worktree.metadata = _merged_metadata(cached, worktree, MERGED_UNCOMMITTED_METADATA)
         return worktree
+    unified_entry = _merged_uncommitted_entry(cached_entry, worktree_entry, cached, worktree)
+    unified = _build_file_from_refs(root, unified_entry, base, None)
+    lines = _merge_uncommitted_lines(unified.lines if unified else [], cached.lines, worktree.lines)
     return ReviewFile(
         path=worktree.path,
         old_path=cached.old_path or worktree.old_path,
-        status=_merged_uncommitted_status(cached, worktree),
+        status=unified.status if unified is not None else _merged_uncommitted_status(cached, worktree),
         language=worktree.language,
-        lines=_combine_line_sections(("Staged changes", cached.lines), ("Worktree changes", worktree.lines)),
+        lines=lines,
         binary=False,
-        metadata=_merged_metadata(cached, worktree, MERGED_TEXT_METADATA),
+        metadata=_merged_metadata(cached, worktree, MERGED_UNCOMMITTED_METADATA),
     )
 
 
@@ -343,23 +368,77 @@ def _merged_uncommitted_status(cached: ReviewFile, worktree: ReviewFile) -> str:
     return worktree.status
 
 
-def _combine_line_sections(*sections: tuple[str, list[ReviewLine]]) -> list[ReviewLine]:
-    combined: list[ReviewLine] = []
-    for title, lines in sections:
-        if not lines:
+def _merged_uncommitted_entry(
+    cached_entry: NameStatus,
+    worktree_entry: NameStatus,
+    cached: ReviewFile,
+    worktree: ReviewFile,
+) -> NameStatus:
+    if cached.status == "deleted" and worktree.status == "added":
+        return NameStatus("M", worktree_entry.path, cached_entry.old_path)
+    if cached.status in {"renamed", "copied", "added"}:
+        return NameStatus(cached_entry.status, worktree_entry.path, cached_entry.old_path)
+    return NameStatus(worktree_entry.status, worktree_entry.path, cached_entry.old_path or worktree_entry.old_path)
+
+
+def _merge_uncommitted_lines(
+    unified_lines: list[ReviewLine],
+    cached_lines: list[ReviewLine],
+    worktree_lines: list[ReviewLine],
+) -> list[ReviewLine]:
+    merged = _reindex_lines(unified_lines)
+    represented = Counter(_line_signature(line) for line in merged if line.kind in {"addition", "deletion"})
+    for line in [*cached_lines, *worktree_lines]:
+        if line.kind not in {"addition", "deletion"} or _consume_represented(line, represented):
             continue
-        combined.append(ReviewLine(len(combined), "metadata", f"-- {title} --"))
-        for line in lines:
-            combined.append(
-                ReviewLine(
-                    index=len(combined),
-                    kind=line.kind,
-                    text=line.text,
-                    old_line=line.old_line,
-                    new_line=line.new_line,
-                )
-            )
+        _insert_line_by_position(merged, line)
+    return _reindex_lines(merged)
+
+
+def _consume_represented(
+    line: ReviewLine,
+    represented: Counter[tuple[str, str, int | None, int | None]],
+) -> bool:
+    signature = _line_signature(line)
+    if represented[signature] > 0:
+        represented[signature] -= 1
+        return True
+    return False
+
+
+def _insert_line_by_position(lines: list[ReviewLine], line: ReviewLine) -> None:
+    key = _line_position(line)
+    insert_at = len(lines)
+    for index, existing in enumerate(lines):
+        if _line_position(existing) > key:
+            insert_at = index
+            break
+    lines.insert(insert_at, _copy_line(line, 0))
+
+
+def _line_signature(line: ReviewLine) -> tuple[str, str, int | None, int | None]:
+    return line.kind, line.text, line.old_line, line.new_line
+
+
+def _line_position(line: ReviewLine) -> int:
+    return line.primary_line or line.old_line or line.new_line or 0
+
+
+def _reindex_lines(lines: list[ReviewLine]) -> list[ReviewLine]:
+    combined: list[ReviewLine] = []
+    for line in lines:
+        combined.append(_copy_line(line, len(combined)))
     return combined
+
+
+def _copy_line(line: ReviewLine, index: int) -> ReviewLine:
+    return ReviewLine(
+        index=index,
+        kind=line.kind,
+        text=line.text,
+        old_line=line.old_line,
+        new_line=line.new_line,
+    )
 
 
 def _build_untracked_file(root: Path, path: str) -> ReviewFile | None:

@@ -60,6 +60,8 @@ The highlighted file is the file currently visible in the review pane or selecte
 
 The file pane is not required to be visible for file synchronization to occur. When it is shown again, the highlighted file should match the active review selection or current scroll location.
 
+When the modified-file tree is scrollable, the bottom of the region should show a compact footer such as `v 10 more below`. If the view is scrolled down, the same footer may also show how many rows are above.
+
 ## Comment List Pane
 
 The comment list pane appears below the file tree when the left pane is visible. It lists all saved review comments grouped by file.
@@ -70,6 +72,8 @@ Each file group should display the file path. Each comment row should display:
 - shortened preview of the first part of the comment body.
 
 `Up`/`k` and `Down`/`j` move between comment rows. Moving to a comment focuses the corresponding inline saved comment in the review pane and scrolls the review pane enough to make it visible. `Enter` keeps that comment selected and returns focus to the review pane. `Delete` and `Backspace` delete the selected saved comment. Mouse click on a comment row has the same focusing behavior.
+
+When the comment list is scrollable, the bottom of the region should show a compact footer such as `v 10 more below`, with an above-count when the user has scrolled down.
 
 ## Review Pane
 
@@ -128,6 +132,8 @@ The UI should visually distinguish:
 - expansion rows.
 
 The style must remain readable in both light and dark terminal themes. Avoid relying only on color; use markers where practical.
+
+The active selected code line must be visible on every diff background. Added and deleted lines should keep their green/red meaning while using a light selected variant of that background rather than switching to a saturated unrelated color.
 
 ## Syntax Highlighting
 
@@ -197,9 +203,15 @@ Comment input keys:
 | --- | --- |
 | `Enter` | Submit comment |
 | `Ctrl+J` | Insert newline |
+| `Left` / `Right` | Move the comment cursor by character |
+| `Up` / `Down` | Move the comment cursor between lines |
 | `Esc` | Cancel comment input |
 
 When `Ctrl+J` inserts a newline at the end of the comment buffer, the newly created blank comment row should render immediately without waiting for another character.
+
+While a comment input or edit is active, the terminal cursor should be visible at the current insertion point, including on newly inserted multiline rows.
+
+Comment input should behave like a small multiline editor: typed text inserts at the cursor, Backspace removes the character before the cursor, and vertical movement preserves the intended column when moving across shorter or longer lines.
 
 While editing a comment message, `j` and `k` are inserted as normal text rather than treated as navigation keys.
 
@@ -248,6 +260,8 @@ The comment block should include a compact left-side marker showing the range. T
 ```
 
 The exact visual style may vary, but the reference range must be obvious. Inline saved comments show only the user's comment body, not a repeated `comment on lines ...` title.
+
+When editing an existing saved comment, keyboard changes must render immediately in the inline comment block as the user types. The saved comment body is updated in the review state only when the edit is submitted.
 
 ## Saved Comment Rendering
 
@@ -311,6 +325,8 @@ When `q` or `quit` succeeds, the TUI closes and returns the in-memory comments t
 The CLI then prompts for a delivery target outside or inside a simple terminal selection UI.
 
 The final review message must be generated after the TUI closes so stdout delivery is clean and not mixed with TUI drawing artifacts.
+
+Before the delivery menu or stdout output is rendered, the CLI restores normal terminal attributes, makes the cursor visible, clears the stale TUI screen, and moves the prompt to a predictable bottom-of-terminal position. This prevents inline menus from being drawn in the middle of leftover review panes after curses exits.
 
 ## Empty Review Behavior
 

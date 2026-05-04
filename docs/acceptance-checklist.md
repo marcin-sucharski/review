@@ -21,6 +21,10 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Startup source menu exits on a single `Ctrl+C`.
 - [ ] Branch comparison allows selecting a target branch.
 - [ ] Branch target selection supports arrow-key navigation and Enter.
+- [ ] Branch target selection shows the current branch on the left and target branch after `->`.
+- [ ] Branch target selection shows at most five branches at once.
+- [ ] Branch target selection filters by typed substring without focusing a search box.
+- [ ] Branch target ordering puts `main` and `master` first, then sorts remaining branches by last commit date.
 - [ ] Branch target selection requires double `Ctrl+C` to cancel.
 - [ ] Canceling prompts exits cleanly.
 
@@ -28,7 +32,7 @@ Use this checklist to decide whether the initial implementation is complete.
 
 - [ ] Unstaged changes are detected.
 - [ ] Staged changes are detected.
-- [ ] Staged and unstaged changes in the same file are handled.
+- [ ] Staged and unstaged changes in the same file are handled in one unified file view without staged/unstaged section splits.
 - [ ] Untracked text files are included or documented otherwise.
 - [ ] Added files render correctly.
 - [ ] Modified files render correctly.
@@ -85,6 +89,8 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] File pane arrow navigation works.
 - [ ] File pane arrow navigation follows rendered tree file order.
 - [ ] File pane `Enter` scrolls to selected file.
+- [ ] File pane shows a bottom scroll indicator when more modified-file rows are below.
+- [ ] Comment pane shows a bottom scroll indicator when more comment rows are below.
 - [ ] Review pane arrow navigation works.
 - [ ] Review pane page navigation works.
 - [ ] Review pane arrow navigation behaves like an editor and scrolls only when the selection reaches the viewport edge.
@@ -104,6 +110,8 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Single-line comments save correctly.
 - [ ] Multi-line comments save correctly.
 - [ ] `Ctrl+J` inserts comment newlines immediately without waiting for another character.
+- [ ] Comment input supports `Left`/`Right` cursor movement and editing at the cursor.
+- [ ] Comment input supports `Up`/`Down` cursor movement across multiple comment lines.
 - [ ] Saved comments render inline.
 - [ ] Comment range marker is visible between line numbers and change markers.
 - [ ] Inline saved comments render only the comment body.
@@ -131,13 +139,14 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Quit flow prompts for delivery target when comments exist.
 - [ ] Delivery target selection supports arrow-key navigation and Enter.
 - [ ] Delivery target selection requires double `Ctrl+C` to cancel.
+- [ ] Delivery target selection starts from a cleared terminal after the TUI exits and is not mixed with stale review-pane text.
 - [ ] Available tmux panes are listed with pane ID and title.
 - [ ] Current pane is marked when detectable.
 - [ ] No-pane/stdout option is always available.
 - [ ] Stdout delivery prints the formatted review.
 - [ ] Tmux delivery sends the same formatted review.
 - [ ] Tmux delivery presses Enter.
-- [ ] `--output-format` / `-o` supports `xml` and `md`, defaulting to `xml`.
+- [ ] `--output-format` / `-o` supports `md` and `xml`, defaulting to `md`.
 - [ ] The selected output format is used for stdout, tmux delivery, and archive JSON.
 - [ ] Tmux failures do not lose comments.
 - [ ] Every non-empty review is archived before delivery.
@@ -154,10 +163,10 @@ Use this checklist to decide whether the initial implementation is complete.
 
 ## Output Format
 
-- [ ] Default non-empty output is XML-structured under `review_feedback`.
-- [ ] Default non-empty output parses as XML.
-- [ ] Markdown output is available with `--output-format md` and `-o md`.
-- [ ] Markdown output uses stable headings and safe fenced blocks.
+- [ ] Default non-empty output is Markdown.
+- [ ] Default Markdown output uses stable headings and safe fenced blocks.
+- [ ] XML output is available with `--output-format xml` and `-o xml`.
+- [ ] XML output parses under `review_feedback`.
 - [ ] Output includes review source.
 - [ ] Branch output includes target branch.
 - [ ] Comments are grouped by file.

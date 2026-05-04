@@ -11,6 +11,15 @@ def git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git", *args], cwd=root, text=True, capture_output=True, check=True)
 
 
+def git_with_dates(root: Path, date: str, *args: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_DATE": date,
+        "GIT_COMMITTER_DATE": date,
+    }
+    return subprocess.run(["git", *args], cwd=root, text=True, capture_output=True, check=True, env=env)
+
+
 def write(root: Path, path: str, text: str) -> None:
     full = root / path
     full.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +98,26 @@ class GitIntegrationTests(unittest.TestCase):
         branches = default_branch_candidates(self.root)
         self.assertIn("main", branches)
 
+    def test_default_branch_candidates_prioritize_main_master_then_recent_branches(self):
+        git(self.root, "checkout", "-b", "old-topic")
+        write(self.root, "old.txt", "old\n")
+        git(self.root, "add", "old.txt")
+        git_with_dates(self.root, "2001-01-01T00:00:00+0000", "commit", "-m", "old topic")
+
+        git(self.root, "checkout", "main")
+        git(self.root, "checkout", "-b", "recent-topic")
+        write(self.root, "recent.txt", "recent\n")
+        git(self.root, "add", "recent.txt")
+        git_with_dates(self.root, "2020-01-01T00:00:00+0000", "commit", "-m", "recent topic")
+
+        git(self.root, "checkout", "main")
+        git(self.root, "branch", "master")
+
+        branches = default_branch_candidates(self.root)
+
+        self.assertEqual(branches[:2], ["main", "master"])
+        self.assertLess(branches.index("recent-topic"), branches.index("old-topic"))
+
     def test_collect_uncommitted_marks_binary_file(self):
         (self.root / "image.bin").write_bytes(b"\x00\x01\x02\x03")
         git(self.root, "add", "image.bin")
@@ -114,7 +143,38 @@ class GitIntegrationTests(unittest.TestCase):
         additions = [line.text for line in app.lines if line.kind == "addition"]
         self.assertIn("export const value = 2;", additions)
         self.assertIn("export const other = 2;", additions)
-        self.assertIn("Contains separate staged and worktree changes", app.metadata)
+        self.assertIn("Includes staged and unstaged changes", app.metadata)
+        self.assertFalse([line for line in app.lines if line.kind == "metadata"])
+
+    def test_collect_uncommitted_mixed_file_uses_single_unified_diff_body(self):
+        write(self.root, "web/app.ts", "export const value = 1;\nexport const other = 1;\n")
+        git(self.root, "add", "web/app.ts")
+        git(self.root, "commit", "-m", "make app two lines")
+        write(self.root, "web/app.ts", "export const value = 2;\nexport const other = 1;\n")
+        git(self.root, "add", "web/app.ts")
+        write(self.root, "web/app.ts", "export const value = 2;\nexport const other = 2;\n")
+
+        _, files = collect_uncommitted(self.root)
+
+        app = [file for file in files if file.path == "web/app.ts"][0]
+        additions = [line.text for line in app.lines if line.kind == "addition"]
+        self.assertEqual(additions, ["export const value = 2;", "export const other = 2;"])
+        self.assertEqual([line.text for line in app.lines if line.kind == "context"], [])
+        self.assertFalse([line for line in app.lines if line.kind == "metadata"])
+
+    def test_collect_uncommitted_keeps_same_text_additions_at_different_lines(self):
+        write(self.root, "same-text.txt", "foo\nx\n")
+        git(self.root, "add", "same-text.txt")
+        git(self.root, "commit", "-m", "add same-text fixture")
+        write(self.root, "same-text.txt", "bar\nx\n")
+        git(self.root, "add", "same-text.txt")
+        write(self.root, "same-text.txt", "foo\nbar\n")
+
+        _, files = collect_uncommitted(self.root)
+
+        file = [file for file in files if file.path == "same-text.txt"][0]
+        bar_additions = [line for line in file.lines if line.kind == "addition" and line.text == "bar"]
+        self.assertEqual([(line.old_line, line.new_line) for line in bar_additions], [(None, 1), (None, 2)])
 
     def test_collect_uncommitted_staged_rename_with_unstaged_edit_is_one_renamed_file(self):
         write(self.root, "rename-source.txt", "".join(f"old line {i}\n" for i in range(80)))
@@ -145,26 +205,14 @@ class GitIntegrationTests(unittest.TestCase):
         renamed = [file for file in files if file.path == "rename-target.txt"][0]
         self.assertEqual(renamed.status, "renamed")
         self.assertEqual(renamed.old_path, "rename-source.txt")
-        self.assertIn("Contains separate staged and worktree changes", renamed.metadata)
+        self.assertIn("Includes staged and unstaged changes", renamed.metadata)
+        self.assertFalse([line for line in renamed.lines if line.kind == "metadata"])
 
-        worktree_start = next(
-            index
-            for index, line in enumerate(renamed.lines)
-            if line.kind == "metadata" and line.text == "-- Worktree changes --"
-        )
-        next_section = next(
-            (
-                index
-                for index, line in enumerate(renamed.lines[worktree_start + 1 :], start=worktree_start + 1)
-                if line.kind == "metadata"
-            ),
-            len(renamed.lines),
-        )
-        worktree_lines = renamed.lines[worktree_start + 1 : next_section]
-        deletions = [line.text for line in worktree_lines if line.kind == "deletion"]
-        additions = [line.text for line in worktree_lines if line.kind == "addition"]
+        deletions = [line.text for line in renamed.lines if line.kind == "deletion"]
+        additions = [line.text for line in renamed.lines if line.kind == "addition"]
         self.assertIn("staged", deletions)
-        self.assertNotIn("base", deletions)
+        self.assertIn("base", deletions)
+        self.assertIn("staged", additions)
         self.assertIn("unstaged", additions)
 
     def test_collect_uncommitted_keeps_recreated_file_after_staged_delete(self):
@@ -178,9 +226,9 @@ class GitIntegrationTests(unittest.TestCase):
 
         recreated = [file for file in files if file.path == "recreated.txt"][0]
         self.assertEqual(recreated.status, "modified")
-        self.assertIn("Contains separate staged and worktree changes", recreated.metadata)
+        self.assertIn("Includes staged and unstaged changes", recreated.metadata)
         sections = [line.text for line in recreated.lines if line.kind == "metadata"]
-        self.assertEqual(sections, ["-- Staged changes --", "-- Worktree changes --"])
+        self.assertEqual(sections, [])
         self.assertTrue(any(line.kind == "deletion" and line.text == "before" for line in recreated.lines))
         self.assertTrue(any(line.kind == "addition" and line.text == "after" for line in recreated.lines))
 
@@ -194,7 +242,8 @@ class GitIntegrationTests(unittest.TestCase):
         added = [file for file in files if file.path == "new-file.txt"][0]
         self.assertEqual(added.status, "added")
         self.assertEqual(added.status_marker(), "A")
-        self.assertIn("Contains separate staged and worktree changes", added.metadata)
+        self.assertIn("Includes staged and unstaged changes", added.metadata)
+        self.assertFalse([line for line in added.lines if line.kind == "metadata"])
         self.assertTrue(any(line.kind == "addition" and line.text == "staged" for line in added.lines))
         self.assertTrue(any(line.kind == "deletion" and line.text == "staged" for line in added.lines))
         self.assertTrue(any(line.kind == "addition" and line.text == "unstaged" for line in added.lines))

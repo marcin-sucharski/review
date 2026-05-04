@@ -20,6 +20,7 @@ KEY_SEQUENCES = {
     b"\x1b[1~": "home",
     b"\x1b[4~": "end",
 }
+BRANCH_PAGE_SIZE = 5
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,128 @@ def select_option(title: str, options: list[MenuOption], *, default_index: int =
         except OSError:
             pass
     return _select_option_text(title, options, default_index, cancel_requires_double)
+
+
+def select_branch_target(
+    title: str,
+    current_branch: str,
+    branches: list[str],
+    *,
+    cancel_requires_double: bool = False,
+) -> str:
+    if not branches:
+        raise ValueError("branch menu requires at least one branch")
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            return _select_branch_inline(title, current_branch, branches, sys.stdin, sys.stdout, cancel_requires_double)
+        except OSError:
+            pass
+    return _select_branch_text(title, current_branch, branches, cancel_requires_double)
+
+
+def _select_branch_inline(
+    title: str,
+    current_branch: str,
+    branches: list[str],
+    input_stream: TextIO,
+    output_stream: TextIO,
+    cancel_requires_double: bool,
+) -> str:
+    input_fd = input_stream.fileno()
+    old_settings = termios.tcgetattr(input_fd)
+    printed_lines = 0
+    selected = 0
+    query = ""
+    cancel_armed = False
+    while True:
+        try:
+            tty.setraw(input_fd)
+            filtered = _filter_branches(branches, query)
+            selected = _clamp_selected_branch(selected, filtered)
+            lines = _render_branch_menu_lines(
+                title,
+                current_branch,
+                filtered,
+                selected,
+                query,
+                use_color=True,
+                cancel_armed=cancel_armed,
+            )
+            if printed_lines:
+                output_stream.write(f"\x1b[{printed_lines}F")
+            render_count = max(printed_lines, len(lines))
+            for index in range(render_count):
+                line = lines[index] if index < len(lines) else ""
+                output_stream.write("\r\x1b[2K" + line + "\n")
+            output_stream.flush()
+            printed_lines = render_count
+
+            key = _read_key(input_fd)
+            if key == "up":
+                selected = max(0, selected - 1)
+                cancel_armed = False
+            elif key == "down":
+                selected = min(max(0, len(filtered) - 1), selected + 1)
+                cancel_armed = False
+            elif key == "home":
+                selected = 0
+                cancel_armed = False
+            elif key == "end":
+                selected = max(0, len(filtered) - 1)
+                cancel_armed = False
+            elif key == "enter":
+                if filtered:
+                    _clear_rendered_menu(output_stream, printed_lines)
+                    return filtered[selected]
+            elif key == "ctrl_c":
+                if cancel_requires_double and not cancel_armed:
+                    cancel_armed = True
+                else:
+                    _clear_rendered_menu(output_stream, printed_lines)
+                    raise KeyboardInterrupt
+            elif key == "escape":
+                _clear_rendered_menu(output_stream, printed_lines)
+                raise KeyboardInterrupt
+            elif _is_backspace_key(key):
+                query = query[:-1]
+                selected = 0
+                cancel_armed = False
+            elif _is_branch_filter_key(key):
+                query += key
+                selected = 0
+                cancel_armed = False
+            else:
+                cancel_armed = False
+        finally:
+            termios.tcsetattr(input_fd, termios.TCSADRAIN, old_settings)
+
+
+def _select_branch_text(title: str, current_branch: str, branches: list[str], cancel_requires_double: bool) -> str:
+    print(f"{title}:")
+    for index, branch in enumerate(branches, start=1):
+        print(f"  {index}. {current_branch} -> {branch}")
+    cancel_armed = False
+    while True:
+        try:
+            choice = input("Select target branch [1]: ").strip()
+        except KeyboardInterrupt:
+            if cancel_requires_double and not cancel_armed:
+                print("\nPress Ctrl+C again to cancel.")
+                cancel_armed = True
+                continue
+            raise
+        if not choice:
+            return branches[0]
+        if choice.isdigit() and 1 <= int(choice) <= len(branches):
+            return branches[int(choice) - 1]
+        exact = [branch for branch in branches if branch == choice]
+        if exact:
+            return exact[0]
+        matches = _filter_branches(branches, choice)
+        if len(matches) == 1:
+            return matches[0]
+        print("Please select a listed branch or a unique branch-name search.")
+        cancel_armed = False
 
 
 def _select_option_inline(
@@ -157,6 +280,67 @@ def _render_menu_lines(title: str, options: list[MenuOption], selected: int, *, 
     return lines
 
 
+def _render_branch_menu_lines(
+    title: str,
+    current_branch: str,
+    branches: list[str],
+    selected: int,
+    query: str,
+    *,
+    use_color: bool,
+    cancel_armed: bool = False,
+) -> list[str]:
+    lines = [f"{title}  (type to filter; Up/Down and Enter; Esc cancels)"]
+    if branches:
+        selected = max(0, min(selected, len(branches) - 1))
+        window_start = _branch_window_start(selected, len(branches))
+        visible = branches[window_start : window_start + BRANCH_PAGE_SIZE]
+        for offset, branch in enumerate(visible, start=window_start):
+            prefix = ">" if offset == selected else " "
+            text = f"{prefix} {current_branch} -> {branch}"
+            if use_color and offset == selected:
+                text = f"\x1b[1;34m{text}\x1b[0m"
+            lines.append(text)
+        above = window_start
+        below = max(0, len(branches) - window_start - len(visible))
+        if above or below:
+            parts = []
+            if above:
+                parts.append(f"{above} above")
+            if below:
+                parts.append(f"{below} below")
+            lines.append("  " + ", ".join(parts))
+    else:
+        lines.append("  No branches match.")
+    lines.append(f"Search: {query}")
+    if cancel_armed:
+        warning = "Press Ctrl+C again to cancel."
+        if use_color:
+            warning = f"\x1b[1;33m{warning}\x1b[0m"
+        lines.append(warning)
+    return lines
+
+
+def _branch_window_start(selected: int, count: int) -> int:
+    if count <= BRANCH_PAGE_SIZE:
+        return 0
+    half_page = BRANCH_PAGE_SIZE // 2
+    return max(0, min(count - BRANCH_PAGE_SIZE, selected - half_page))
+
+
+def _filter_branches(branches: list[str], query: str) -> list[str]:
+    query = query.casefold()
+    if not query:
+        return branches
+    return [branch for branch in branches if query in branch.casefold()]
+
+
+def _clamp_selected_branch(selected: int, branches: list[str]) -> int:
+    if not branches:
+        return 0
+    return max(0, min(selected, len(branches) - 1))
+
+
 def _read_key(input_fd: int) -> str:
     sequence = os.read(input_fd, 1)
     if sequence == b"\x1b":
@@ -178,6 +362,14 @@ def _decode_key(sequence: bytes) -> str:
     if sequence == b"\x1b":
         return "escape"
     return KEY_SEQUENCES.get(sequence, sequence.decode(errors="ignore"))
+
+
+def _is_backspace_key(key: str) -> bool:
+    return key in {"\x7f", "\b"}
+
+
+def _is_branch_filter_key(key: str) -> bool:
+    return len(key) == 1 and key.isprintable()
 
 
 def _is_known_key_prefix(sequence: bytes) -> bool:
