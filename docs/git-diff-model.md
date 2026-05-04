@@ -25,21 +25,18 @@ If the command fails, the CLI exits with a user-friendly "not a Git repository" 
 
 ## Review Source: Uncommitted Changes
 
-The uncommitted source should include staged and unstaged changes in one unified review view.
+The uncommitted source should include staged and unstaged changes in one unified review view that represents the final working-tree state against `HEAD`.
 
 Recommended command strategy:
 
 ```bash
-git diff --find-renames --find-copies --function-context
-git diff --cached --find-renames --find-copies --function-context
-git status --porcelain=v1 -z
+git diff --find-renames --find-copies --function-context HEAD --
+git ls-files --others --exclude-standard -z
 ```
 
-The implementation must merge staged and unstaged records carefully if the same file appears in both. A mixed file should appear as one `ReviewFile` without separate staged/unstaged section headers. The collection model should still preserve Git's three-state semantics: staged changes are read as `HEAD` to index, and unstaged changes are read as index to working tree.
+The implementation must not render staged and unstaged hunks as separate sections. If the same line is staged and then modified again in the working tree, only the final working-tree diff should be shown. A staged change that is fully reverted in the working tree should not appear in the review.
 
-When merging those three-state records into the unified view, the implementation must not treat same-text additions or deletions at different line positions as duplicates. A staged line that is later undone or shifted still needs to remain visible if the same text appears elsewhere in the final working tree diff.
-
-Alternative command strategies are acceptable if tests prove they correctly handle staged-only, unstaged-only, and mixed changes.
+Alternative command strategies are acceptable if tests prove they correctly handle staged-only, unstaged-only, mixed changes, and untracked files as one final review view.
 
 ### Untracked Files
 
@@ -51,18 +48,17 @@ Large or binary untracked files should be marked as binary or skipped with a cle
 
 ## Review Source: Branch Comparison
 
-The branch comparison source compares the current branch against the merge base with the selected target branch and includes the current uncommitted changes on top of the branch. Staged changes, unstaged changes, and untracked files must be included in the same PR-style review view.
+The branch comparison source compares the final working-tree state against the merge base with the selected target branch. Committed branch changes plus current staged and unstaged edits must appear in the same PR-style review view, with mixed staged/unstaged edits shown only once as the final file state. Untracked files are included separately as added files.
 
 Recommended commands:
 
 ```bash
 git merge-base HEAD <target-branch>
-git diff --cached --find-renames --find-copies --function-context <merge-base> --
-git diff --find-renames --find-copies --function-context --
+git diff --find-renames --find-copies --function-context <merge-base> --
 git ls-files --others --exclude-standard -z
 ```
 
-The merge-base model is preferred because it matches pull-request style comparison while still allowing the index and working tree to be layered on top. The staged/index section is `merge-base -> index`, so it includes committed branch changes and staged local changes. The unstaged section is `index -> worktree`, so it includes only current working-tree edits.
+The merge-base model is preferred because it matches pull-request style comparison while still reflecting the current files on disk.
 
 The selected target branch should be recorded in the session source metadata.
 
@@ -178,7 +174,7 @@ The parser should know the full file content when possible so expansion rows can
 
 For uncommitted changes, full file content can come from the working tree and old content from Git object lookups.
 
-For branch comparison, full new content can come from the index or working tree when uncommitted changes exist, and old content can come from `<merge-base>:<path>` or the index depending on the section being rendered.
+For branch comparison, full new content can come from the working tree when uncommitted changes exist, and old content can come from `<merge-base>:<path>`.
 
 Expansion rows should reveal unchanged context lines around changed regions without requiring a new Git diff command.
 

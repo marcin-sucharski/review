@@ -61,20 +61,19 @@ The uncommitted review source includes:
 - copied files if Git reports them,
 - optionally untracked files if the implementation supports producing content for them.
 
-Staged and unstaged changes for the same path must be shown as a single unified file entry, not as separate staged and unstaged review sections.
+Staged and unstaged changes for the same path must be shown as a single unified file entry, not as separate staged and unstaged review sections. The visible diff must represent the final working-tree state against `HEAD`; if a staged line is modified again before review, only the final working-tree line is shown.
 
 The implementation must define and test the exact untracked-file behavior. The preferred behavior is to include untracked text files as added files.
 
 ### Branch Comparison
 
-The branch comparison review source compares the current branch against the merge base with the selected target branch and also includes the current uncommitted changes on top of the branch. This includes staged changes, unstaged changes, and untracked files. A PR-style review must never omit local uncommitted work just because the user selected branch comparison.
+The branch comparison review source compares the final working-tree state against the merge base with the selected target branch. This includes committed branch changes plus current staged and unstaged edits, with mixed staged/unstaged edits shown once as the final file state. Untracked files are included as added files. A PR-style review must never omit local uncommitted work just because the user selected branch comparison.
 
 Preferred Git model:
 
 ```bash
 git merge-base HEAD <target-branch>
-git diff --cached --find-renames --find-copies <merge-base> --
-git diff --find-renames --find-copies --
+git diff --find-renames --find-copies <merge-base> --
 git ls-files --others --exclude-standard -z
 ```
 

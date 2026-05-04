@@ -40,7 +40,8 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Renamed files render correctly.
 - [ ] Binary files do not crash the UI.
 - [ ] Branch comparison uses merge-base PR-style semantics.
-- [ ] Branch comparison includes committed branch changes plus current staged, unstaged, and untracked changes.
+- [ ] Uncommitted review shows the final working-tree diff against `HEAD`, without duplicated staged/unstaged hunks.
+- [ ] Branch comparison includes committed branch changes plus current staged, unstaged, and untracked changes as one final working-tree diff.
 - [ ] Broad context is visible by default.
 
 ## TUI Layout

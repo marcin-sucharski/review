@@ -15,9 +15,9 @@ On startup, the CLI asks whether the user wants to review:
 
 After the selection, the CLI detects the corresponding Git changes and opens a terminal user interface.
 
-For pull-request style reviews, the target branch picker shows the current branch on the left and the target branch after `->`. It shows five branch choices at a time, supports `Up`/`Down` selection, and filters by typed substring immediately. The PR-style review includes committed branch changes and the current uncommitted changes on top of the branch, including staged, unstaged, and untracked files.
+For pull-request style reviews, the target branch picker shows the current branch on the left and the target branch after `->`. It shows five branch choices at a time, supports `Up`/`Down` selection, and filters by typed substring immediately. The PR-style review shows the final working-tree diff against the target branch merge base, so committed branch changes and current staged or unstaged edits appear once as the current file state. Untracked files are included as added files.
 
-For uncommitted reviews, staged and unstaged changes are collected together and shown as one unified review view. A file that has both staged and unstaged edits appears once, without separate staged and unstaged sections.
+For uncommitted reviews, staged and unstaged changes are collected together and shown as one unified review view. A file that has both staged and unstaged edits appears once as the final working-tree diff against `HEAD`, without separate staged and unstaged sections.
 
 The TUI uses a review-first layout. The left navigation pane is hidden by default to maximize code space, and `T` shows or hides it. When visible, the TUI has two vertical panes:
 

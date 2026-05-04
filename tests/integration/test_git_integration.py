@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from review.errors import NoChangesFound
 from review.git import collect_branch_comparison, collect_uncommitted, default_branch_candidates, repository_root
 
 
@@ -130,9 +131,9 @@ class GitIntegrationTests(unittest.TestCase):
 
         app = [file for file in files if file.path == "web/app.ts"][0]
         additions = [line.text for line in app.lines if line.kind == "addition"]
-        self.assertIn("export const value = 2;", additions)
-        self.assertIn("export const value = 3;", additions)
-        self.assertIn("Includes committed and uncommitted changes", app.metadata)
+        self.assertEqual(additions, ["export const value = 3;"])
+        self.assertNotIn("export const value = 2;", additions)
+        self.assertEqual(app.metadata, [])
 
     def test_default_branch_candidates_include_main(self):
         branches = default_branch_candidates(self.root)
@@ -166,25 +167,37 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertTrue(binary.binary)
         self.assertEqual(binary.status, "binary")
 
-    def test_collect_uncommitted_includes_staged_change_hidden_by_worktree_revert(self):
+    def test_collect_uncommitted_ignores_staged_change_hidden_by_worktree_revert(self):
         write(self.root, "web/app.ts", "export const value = 2;\n")
         git(self.root, "add", "web/app.ts")
         write(self.root, "web/app.ts", "export const value = 1;\n")
-        _, files = collect_uncommitted(self.root)
-        app = [file for file in files if file.path == "web/app.ts"][0]
-        self.assertTrue(any(line.kind == "addition" and "2" in line.text for line in app.lines))
+        with self.assertRaisesRegex(NoChangesFound, "no uncommitted changes found"):
+            collect_uncommitted(self.root)
 
-    def test_collect_uncommitted_merges_hidden_staged_and_visible_worktree_changes(self):
+    def test_collect_uncommitted_uses_final_worktree_diff_for_mixed_staged_and_unstaged_changes(self):
         write(self.root, "web/app.ts", "export const value = 2;\nexport const other = 1;\n")
         git(self.root, "add", "web/app.ts")
         write(self.root, "web/app.ts", "export const value = 1;\nexport const other = 2;\n")
         _, files = collect_uncommitted(self.root)
         app = [file for file in files if file.path == "web/app.ts"][0]
         additions = [line.text for line in app.lines if line.kind == "addition"]
-        self.assertIn("export const value = 2;", additions)
-        self.assertIn("export const other = 2;", additions)
-        self.assertIn("Includes staged and unstaged changes", app.metadata)
+        self.assertEqual(additions, ["export const other = 2;"])
+        self.assertNotIn("export const value = 2;", additions)
+        self.assertEqual(app.metadata, [])
         self.assertFalse([line for line in app.lines if line.kind == "metadata"])
+
+    def test_collect_uncommitted_staged_and_unstaged_same_line_shows_only_final_value(self):
+        write(self.root, "web/app.ts", "export const value = 2;\n")
+        git(self.root, "add", "web/app.ts")
+        write(self.root, "web/app.ts", "export const value = 3;\n")
+
+        _, files = collect_uncommitted(self.root)
+
+        app = [file for file in files if file.path == "web/app.ts"][0]
+        additions = [line.text for line in app.lines if line.kind == "addition"]
+        deletions = [line.text for line in app.lines if line.kind == "deletion"]
+        self.assertEqual(additions, ["export const value = 3;"])
+        self.assertEqual(deletions, ["export const value = 1;"])
 
     def test_collect_uncommitted_mixed_file_uses_single_unified_diff_body(self):
         write(self.root, "web/app.ts", "export const value = 1;\nexport const other = 1;\n")
@@ -202,7 +215,7 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertEqual([line.text for line in app.lines if line.kind == "context"], [])
         self.assertFalse([line for line in app.lines if line.kind == "metadata"])
 
-    def test_collect_uncommitted_keeps_same_text_additions_at_different_lines(self):
+    def test_collect_uncommitted_uses_final_position_for_same_text_added_elsewhere(self):
         write(self.root, "same-text.txt", "foo\nx\n")
         git(self.root, "add", "same-text.txt")
         git(self.root, "commit", "-m", "add same-text fixture")
@@ -214,7 +227,7 @@ class GitIntegrationTests(unittest.TestCase):
 
         file = [file for file in files if file.path == "same-text.txt"][0]
         bar_additions = [line for line in file.lines if line.kind == "addition" and line.text == "bar"]
-        self.assertEqual([(line.old_line, line.new_line) for line in bar_additions], [(None, 1), (None, 2)])
+        self.assertEqual([(line.old_line, line.new_line) for line in bar_additions], [(None, 2)])
 
     def test_collect_uncommitted_staged_rename_with_unstaged_edit_is_one_renamed_file(self):
         write(self.root, "rename-source.txt", "".join(f"old line {i}\n" for i in range(80)))
@@ -222,7 +235,11 @@ class GitIntegrationTests(unittest.TestCase):
         git(self.root, "commit", "-m", "add rename source")
         git(self.root, "mv", "rename-source.txt", "rename-target.txt")
         git(self.root, "add", "-A")
-        write(self.root, "rename-target.txt", "".join(f"new line {i}\n" for i in range(80)))
+        write(
+            self.root,
+            "rename-target.txt",
+            "".join("changed line 10\n" if i == 10 else f"old line {i}\n" for i in range(80)),
+        )
         _, files = collect_uncommitted(self.root)
         paths = [file.path for file in files]
         self.assertIn("rename-target.txt", paths)
@@ -231,7 +248,7 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertEqual(renamed.status, "renamed")
         self.assertEqual(renamed.old_path, "rename-source.txt")
 
-    def test_collect_uncommitted_uses_index_as_base_for_unstaged_section(self):
+    def test_collect_uncommitted_uses_head_as_base_for_mixed_rename(self):
         write(self.root, "rename-source.txt", "alpha\nbase\nomega\n")
         git(self.root, "add", "rename-source.txt")
         git(self.root, "commit", "-m", "add staged rename source")
@@ -245,14 +262,14 @@ class GitIntegrationTests(unittest.TestCase):
         renamed = [file for file in files if file.path == "rename-target.txt"][0]
         self.assertEqual(renamed.status, "renamed")
         self.assertEqual(renamed.old_path, "rename-source.txt")
-        self.assertIn("Includes staged and unstaged changes", renamed.metadata)
+        self.assertNotIn("Includes staged and unstaged changes", renamed.metadata)
         self.assertFalse([line for line in renamed.lines if line.kind == "metadata"])
 
         deletions = [line.text for line in renamed.lines if line.kind == "deletion"]
         additions = [line.text for line in renamed.lines if line.kind == "addition"]
-        self.assertIn("staged", deletions)
         self.assertIn("base", deletions)
-        self.assertIn("staged", additions)
+        self.assertNotIn("staged", deletions)
+        self.assertNotIn("staged", additions)
         self.assertIn("unstaged", additions)
 
     def test_collect_uncommitted_keeps_recreated_file_after_staged_delete(self):
@@ -266,7 +283,7 @@ class GitIntegrationTests(unittest.TestCase):
 
         recreated = [file for file in files if file.path == "recreated.txt"][0]
         self.assertEqual(recreated.status, "modified")
-        self.assertIn("Includes staged and unstaged changes", recreated.metadata)
+        self.assertEqual(recreated.metadata, [])
         sections = [line.text for line in recreated.lines if line.kind == "metadata"]
         self.assertEqual(sections, [])
         self.assertTrue(any(line.kind == "deletion" and line.text == "before" for line in recreated.lines))
@@ -282,11 +299,10 @@ class GitIntegrationTests(unittest.TestCase):
         added = [file for file in files if file.path == "new-file.txt"][0]
         self.assertEqual(added.status, "added")
         self.assertEqual(added.status_marker(), "A")
-        self.assertIn("Includes staged and unstaged changes", added.metadata)
+        self.assertEqual(added.metadata, [])
         self.assertFalse([line for line in added.lines if line.kind == "metadata"])
-        self.assertTrue(any(line.kind == "addition" and line.text == "staged" for line in added.lines))
-        self.assertTrue(any(line.kind == "deletion" and line.text == "staged" for line in added.lines))
-        self.assertTrue(any(line.kind == "addition" and line.text == "unstaged" for line in added.lines))
+        self.assertFalse(any(line.text == "staged" for line in added.lines))
+        self.assertEqual([line.text for line in added.lines if line.kind == "addition"], ["unstaged"])
 
     def test_collect_uncommitted_mode_only_change_is_metadata_only(self):
         if git(self.root, "config", "--get", "core.filemode").stdout.strip() == "false":

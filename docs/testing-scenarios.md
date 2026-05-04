@@ -53,13 +53,15 @@ Fixture files should cover required languages:
 | Run inside Git repo with no changes | Reports no changes, exits cleanly |
 | User selects uncommitted changes with unstaged file | Opens review with modified file |
 | User selects uncommitted changes with staged file | Opens review with staged file |
-| User selects uncommitted changes with staged and unstaged same file | Shows one unified file view with no staged/unstaged section split |
-| Same text is added in staged and final worktree diffs at different lines | Both additions remain visible |
+| User selects uncommitted changes with staged and unstaged same file | Shows one final working-tree file view with no staged/unstaged section split |
+| Same line is staged and then modified again unstaged | Only the final working-tree line appears in the review |
+| Staged change is reverted by unstaged working-tree content | Reverted staged-only hunk is omitted because the final working tree matches `HEAD` |
 | User selects uncommitted changes with untracked text file | Shows file as added |
 | User selects uncommitted changes with untracked binary file | Shows file as binary or skipped with explanation |
-| User selects branch comparison | Compares merge base to current index/worktree, including committed branch changes |
+| User selects branch comparison | Compares merge base to final working tree, including committed branch changes |
 | User selects branch comparison with staged changes | PR-style review includes staged local changes |
 | User selects branch comparison with unstaged changes | PR-style review includes unstaged local changes |
+| User selects branch comparison with staged and unstaged edits on the same line | PR-style review shows only the final working-tree line |
 | User selects branch comparison with untracked files | PR-style review includes untracked files |
 | Branch comparison target does not exist | Friendly error |
 | Git command fails | Friendly error without raw traceback |
@@ -80,7 +82,7 @@ Fixture files should cover required languages:
 | Common target branches exist | `master` and `main` appear before date-sorted topic branches, with `master` first |
 | Topic branches have different commit dates | More recently committed branches appear earlier |
 | Current branch has commits not on target | PR-style diff includes feature commits |
-| Current branch has uncommitted changes on top of feature commits | PR-style diff includes both feature commits and current uncommitted changes |
+| Current branch has uncommitted changes on top of feature commits | PR-style diff includes the final working-tree state against the target branch |
 | Target branch is ancestor of current branch | Diff includes changes since branch point |
 | Current branch equals target branch with no uncommitted changes | No changes found |
 
