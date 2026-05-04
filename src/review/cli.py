@@ -20,6 +20,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"review {__version__}")
     parser.add_argument("--source", choices=["uncommitted", "branch"], help="Review source. If omitted, prompt interactively.")
     parser.add_argument("--target", help="Target branch for --source branch.")
+    parser.add_argument(
+        "-o",
+        "--output-format",
+        choices=["xml", "md"],
+        default="xml",
+        help="Review message output format. Defaults to xml.",
+    )
     parser.add_argument("--stdout", action="store_true", help="Print review comments instead of prompting for tmux delivery.")
     parser.add_argument(
         "--no-tui",
@@ -47,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ReviewError("interactive TUI requires a terminal")
             ReviewApp(state).run()
 
-        message = format_review(state)
+        message = format_review(state, args.output_format)
         if state.comments:
             archive_review_best_effort(state, message)
         if args.stdout:

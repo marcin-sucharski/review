@@ -76,11 +76,13 @@ The UI should describe this as PR-style comparison because it mirrors the usual 
 
 ## TUI Layout
 
-The TUI opens with the review pane focused and the file pane hidden by default.
+The TUI opens with the review pane focused and the left navigation pane hidden by default.
 
-Pressing `T` shows or hides the file pane. When the file pane is visible, the TUI has two vertical panes.
+Pressing `T` shows or hides the left navigation pane. When the left pane is visible, the TUI has two vertical panes.
 
-The left file pane lists modified files as a tree with collapsed directory chains when no modified file exists between the directories.
+The left pane is split vertically. The upper region lists modified files as a tree with collapsed directory chains when no modified file exists between the directories. The lower region lists saved review comments grouped by file.
+
+Each comment-list row must show a line number or line range plus a shortened preview of the comment body. Selecting a comment from this list scrolls the right review pane to the corresponding inline comment.
 
 The right review pane shows a continuous view of all changed files. It is not a separate per-file detail page.
 
@@ -127,23 +129,32 @@ Unknown file types should still display as plain text.
 
 ## Navigation
 
-`Tab` moves focus between the file pane and review pane when the file pane is visible. `T` toggles the file pane between visible and hidden. When the file pane is hidden, focus remains in the review pane.
+`Tab` moves focus between the review pane, file tree, and comment list when the left pane is visible. `T` toggles the left pane between visible and hidden. When the left pane is hidden, focus remains in the review pane.
 
 In the file pane:
 
-- `Up` and `Down` move through files,
+- `Up`/`k` and `Down`/`j` move through files,
 - `Enter` focuses the selected file in the review pane,
 - mouse click selects and focuses a file.
 
+In the comment list pane:
+
+- `Up`/`k` and `Down`/`j` move through saved comments,
+- `Enter` keeps the selected comment focused in the review pane,
+- `Delete` and `Backspace` delete the selected saved comment,
+- mouse click selects and focuses a comment.
+
 In the review pane:
 
-- `Up` and `Down` move the selected row or line,
+- `Up`/`k` and `Down`/`j` move the selected row or line,
 - `PageUp` and `PageDown` scroll by page,
 - mouse click selects a line or expansion row,
 - `Enter` on code opens a comment input,
 - `Enter` on expansion rows expands hidden context.
 
 `Shift+Up` and `Shift+Down` extend or shrink the current line selection in the review pane.
+
+While editing a comment message, `j` and `k` are inserted as text and do not navigate.
 
 The UI must keep the selected line visible while navigating. Review-pane arrow navigation should move like an editor: the selection moves inside the viewport first, then scrolling begins near the lower edge with roughly three rows preserved below the selection. Page navigation moves by a viewport while preserving the selected line's screen offset when possible.
 
@@ -171,6 +182,8 @@ Comment rendering must show:
 - end line when different from start line,
 - selected context lines,
 - comment body.
+
+The delivered non-empty review message defaults to XML and can be changed with `--output-format` / `-o`. Supported output formats are `xml` and `md`. XML output must use tags to clearly separate metadata, files, review comments, line ranges, context lines, and comment bodies. Markdown output must use stable headings and safe fenced blocks. The selected format must be used consistently for stdout, tmux delivery, and the archived review message.
 
 The review pane must include a short visual element to the left of each inline comment indicating the referenced section of code.
 

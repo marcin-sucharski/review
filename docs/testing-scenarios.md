@@ -166,8 +166,10 @@ Fixture files should cover required languages:
 | TUI starts with changes | Review pane visible with file pane hidden by default |
 | Press `T` from initial view | File pane appears |
 | File pane shown | Collapsed directory tree is visible |
-| Press `Tab` with file pane visible | Focus moves between file and review panes |
+| Press `Tab` with file pane visible | Focus cycles between review pane, file tree, and comment list |
 | Select file in file pane | Review pane scrolls to file |
+| Comments exist and file pane is shown | Comment list appears under file tree grouped by file |
+| Select comment in comment list | Review pane focuses the inline saved comment |
 | Scroll review pane | File pane highlight updates |
 | Long file scrolls | Sticky header shows current file |
 | Next file reaches top | Sticky header updates |
@@ -237,12 +239,16 @@ Fixture files should cover required languages:
 | Scenario | Expected Result |
 | --- | --- |
 | No comments | Empty-review behavior matches policy |
-| One comment | Output includes repo, source, file, line, code, comment |
-| Multi-line comment range | Output says `Lines: start-end` |
-| Deleted-line comment | Output labels old-side lines |
-| Multiple files | Output grouped by file |
-| Multiple comments same file | Sorted by line number |
-| Code contains triple backticks | Formatter chooses longer fence |
+| One comment | Default XML output includes repo, source, file, line, code, comment |
+| XML parseability | Default non-empty output parses as XML |
+| Multi-line comment range | XML `line_range` includes start/end and label text |
+| Deleted-line comment | XML `line_range` uses `side="old"` |
+| Multiple files | XML output grouped by `file` elements |
+| Multiple comments same file | `review_comment` elements sorted by line number |
+| Code contains XML metacharacters | Formatter escapes text and output remains parseable |
+| Markdown output option | `--output-format md` emits Markdown headings and fenced blocks |
+| Markdown fence collision | Fences expand when code or comments contain backticks or tildes |
+| Code contains triple backticks | Backticks are preserved as text without Markdown fence handling |
 | Unicode comment and code | Preserved |
 | Long line | Preserved or wrapped only by terminal, not formatter |
 | Branch comparison source | Target branch included |
@@ -305,6 +311,7 @@ These tests should run only when tmux is available.
 10. Select no tmux pane.
 11. Verify stdout contains grouped comments with line references and context.
 12. Verify a review JSON archive was written and contains the same review message.
+13. Repeat with `--output-format md` and verify stdout and archive contain Markdown rather than XML.
 
 ### Scenario 2: Branch Review To Tmux Pane
 

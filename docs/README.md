@@ -15,16 +15,18 @@ On startup, the CLI asks whether the user wants to review:
 
 After the selection, the CLI detects the corresponding Git changes and opens a terminal user interface.
 
-The TUI uses a review-first layout. The file tree pane is hidden by default to maximize code space, and `T` shows or hides it. When visible, the TUI has two vertical panes:
+The TUI uses a review-first layout. The left navigation pane is hidden by default to maximize code space, and `T` shows or hides it. When visible, the TUI has two vertical panes:
 
-- the left pane shows a tree/list of modified files,
+- the left pane is split between a tree/list of modified files and a grouped list of review comments,
 - the right pane shows one continuous review view containing the changed files.
 
 The file list and review pane stay synchronized. Selecting a file in the left pane scrolls the right pane to that file. Scrolling through the right pane updates the highlighted file in the left pane to match the currently visible file.
 
+The comment list groups saved comments by file. Each comment row is prefixed with the referenced line number or line range and shows a shortened preview of the comment body. Selecting a comment from this list focuses the corresponding inline comment in the review pane.
+
 The right pane shows changed files with syntax highlighting and line numbers. Lines wrap by default. The default diff view shows broad context around changes, similar to `git diff -W`, rather than only a few surrounding lines. Where the full file is not visible, selectable expansion rows allow the user to expand more context upward or downward by 20 lines.
 
-Users can navigate between panes with `Tab`. In the review pane, users can move the selected line with arrow keys and page keys. Mouse support lets users click a pane or line to focus and select it.
+Users can navigate between panes with `Tab`. When the left pane is visible, focus cycles through the review pane, file tree, and comment list. In the review pane, users can move the selected line with arrow keys and page keys. Mouse support lets users click a pane or line to focus and select it.
 
 Users can select one or more lines. `Shift+Up` and `Shift+Down` extend or shrink the selected range. Pressing `Enter` on selected code lines opens an inline GitHub-style comment input below the selected line or range. `Ctrl+J` inserts a newline in the comment input and `Enter` saves the comment. Comments are stored in memory and rendered inline beneath the referenced code. Multi-line comments must visually show the range they apply to.
 
@@ -37,7 +39,7 @@ When the review ends, the CLI asks where to send the review:
 - a selected tmux pane, chosen from available panes with titles and pane IDs, or
 - no pane, in which case the tool prints the final review text to standard output and exits.
 
-When a tmux pane is selected, the tool sends the generated review feedback to that pane and presses Enter. The review feedback groups comments by file and includes referenced line numbers, selected context lines, and the user comment below each context block.
+When a tmux pane is selected, the tool sends the generated review feedback to that pane and presses Enter. Non-empty review feedback is XML-structured by default and can be switched to Markdown with `--output-format md` or `-o md`. Both formats group comments by file and include referenced line numbers, selected context lines, and the user comment body.
 
 Every non-empty review is also saved before delivery. The archive is a JSON file under `$XDG_DATA_HOME/review/reviews` or, when `XDG_DATA_HOME` is not set, `~/.local/share/review/reviews`. Each file contains the repository path, current Git branch, and exact generated review message.
 
@@ -72,7 +74,9 @@ The tool must be thoroughly tested with unit tests, integration tests using temp
 
 `Review pane` means the right pane showing the continuous diff-like code view.
 
-`File pane` means the left pane showing modified files.
+`File pane` means the top part of the left pane showing modified files.
+
+`Comment list pane` means the lower part of the left pane showing saved review comments grouped by file.
 
 `Review archive` means the JSON file written for every completed non-empty review.
 

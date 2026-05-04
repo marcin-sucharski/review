@@ -51,7 +51,7 @@ docs/
 
 `review_state.py` owns the mutable review session state: focused pane, selected file, selected line range, expanded context, and saved comments.
 
-`format_review.py` turns saved comments and referenced context into the final feedback message.
+`format_review.py` turns saved comments and referenced context into the final feedback message. XML is the default output format, and Markdown is available through the CLI output-format option.
 
 `archive.py` persists completed non-empty reviews as JSON under the XDG local data directory.
 
@@ -72,7 +72,7 @@ docs/
 3. Git adapter collects diff information.
 4. Diff parser builds immutable file and line records.
 5. Review state creates an initially visible review document with broad context.
-6. TUI renders file pane and review pane from review state.
+6. TUI renders the left navigation pane and review pane from review state.
 7. User navigates, expands context, and adds comments.
 8. Quit command exits TUI and returns saved comments.
 9. Formatter creates final review message.
@@ -251,6 +251,12 @@ Review pane to file pane:
 - When the review pane scrolls, compute the file section nearest the top visible code line.
 - Highlight that file in the file pane.
 - If the highlighted file is outside the file pane viewport, scroll the file pane enough to show it.
+
+Comment list to review pane:
+
+- Build comment-list rows from saved comments grouped by file.
+- Prefix each comment row with its referenced line number or range.
+- Selecting a comment row selects the matching inline comment item in the review document and scrolls it into view.
 
 Sticky file header:
 

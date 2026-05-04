@@ -11,6 +11,13 @@ from review.tui.menu import MenuOption, _clear_rendered_menu, _decode_key, _read
 
 
 class CliPromptTests(unittest.TestCase):
+    def test_parser_defaults_to_xml_output_format_and_accepts_short_md_option(self):
+        parser = cli.build_parser()
+
+        self.assertEqual(parser.parse_args([]).output_format, "xml")
+        self.assertEqual(parser.parse_args(["-o", "md"]).output_format, "md")
+        self.assertEqual(parser.parse_args(["--output-format", "xml"]).output_format, "xml")
+
     def test_prompt_source_uses_selectable_menu_options(self):
         with mock.patch.object(cli, "select_option", return_value="branch") as select_option:
             self.assertEqual(cli.prompt_source(), "branch")
@@ -144,6 +151,38 @@ class CliPromptTests(unittest.TestCase):
 
         archive_review.assert_called_once()
         self.assertIn("Needs work.", stdout.getvalue())
+
+    def test_main_uses_selected_markdown_output_for_archive_and_stdout_delivery(self):
+        file = create_review_file("app.py", "modified", ["old"], ["new"])
+
+        class TtyStringIO(io.StringIO):
+            def isatty(self):
+                return True
+
+        class FakeReviewApp:
+            def __init__(self, state):
+                self.state = state
+
+            def run(self):
+                self.state.add_comment("Needs work.")
+                return self.state
+
+        stdout = TtyStringIO()
+        with (
+            mock.patch.object(cli, "repository_root", return_value=Path("/repo")),
+            mock.patch.object(cli, "collect_uncommitted", return_value=(ReviewSource("uncommitted"), [file])),
+            mock.patch.object(cli.sys.stdin, "isatty", return_value=True),
+            mock.patch.object(cli.sys, "stdout", stdout),
+            mock.patch.object(cli, "ReviewApp", FakeReviewApp),
+            mock.patch.object(cli, "archive_review") as archive_review,
+        ):
+            self.assertEqual(cli.main(["--source", "uncommitted", "--stdout", "--output-format", "md"]), 0)
+
+        archived_message = archive_review.call_args.args[1]
+        self.assertIn("Review comments for /repo", stdout.getvalue())
+        self.assertIn("```python", stdout.getvalue())
+        self.assertNotIn("<review_feedback>", stdout.getvalue())
+        self.assertEqual(archived_message, stdout.getvalue())
 
     def test_main_archive_failure_does_not_block_stdout_delivery(self):
         file = create_review_file("app.py", "modified", ["old"], ["new"])

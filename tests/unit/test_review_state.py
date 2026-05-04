@@ -204,6 +204,18 @@ class ReviewStateTests(unittest.TestCase):
         self.assertTrue(state.delete_comment(comment.id))
         self.assertIsNone(state.comment_for_selection())
 
+    def test_select_comment_focuses_saved_comment_document_row(self):
+        file = create_review_file("a.py", "modified", ["a"], ["A"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        comment = state.add_comment("Original")
+        self.assertIsNotNone(comment)
+
+        document_index = state.select_comment(comment.id)
+
+        self.assertEqual(state.selection_kind, "comment")
+        self.assertEqual(state.selected_comment_id, comment.id)
+        self.assertEqual(state.document_items()[document_index].comment, comment)
+
     def test_range_selection_does_not_cross_hidden_expansion_gap(self):
         old = [f"line {index}" for index in range(320)]
         new = old.copy()

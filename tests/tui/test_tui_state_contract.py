@@ -214,6 +214,53 @@ class TuiStateContractTests(unittest.TestCase):
 
         self.assertEqual(state.comments, [])
 
+    def test_selected_comment_backspace_removes(self):
+        file = create_review_file("src/app.js", "modified", ["a"], ["A"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        comment = state.add_comment("Original")
+        self.assertIsNotNone(comment)
+        app = ReviewApp(state)
+        comment_index = next(index for index, item in enumerate(state.document_items()) if item.kind == "comment")
+
+        state.select_document_index(comment_index)
+        app._handle_review_key("\b")
+
+        self.assertEqual(state.comments, [])
+        self.assertEqual(app.status_message, "Comment deleted.")
+
+    def test_comment_pane_backspace_removes_selected_comment(self):
+        file = create_review_file("src/app.js", "modified", ["a"], ["A"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        comment = state.add_comment("Original")
+        self.assertIsNotNone(comment)
+        app = ReviewApp(state)
+        app.file_pane_visible = True
+        app.focus = "comments"
+        app._focus_comment_pane_selection()
+
+        app._handle_comment_pane_key(curses.KEY_BACKSPACE)
+
+        self.assertEqual(state.comments, [])
+        self.assertEqual(app.status_message, "Comment deleted.")
+
+    def test_j_and_k_navigate_panes_but_not_comment_edit(self):
+        file = create_review_file("src/app.js", "modified", ["a", "b"], ["A", "B"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        first_index = state.active_document_index()
+        app = ReviewApp(state)
+
+        app._handle_review_key("j")
+        self.assertNotEqual(state.active_document_index(), first_index)
+        app._handle_review_key("k")
+        self.assertEqual(state.active_document_index(), first_index)
+
+        app.comment_mode = True
+        app.comment_buffer = ""
+        app._handle_key("j")
+        app._handle_key("k")
+
+        self.assertEqual(app.comment_buffer, "jk")
+
     def test_mouse_drag_extends_selection_range(self):
         file = create_review_file("src/app.js", "modified", ["a", "b"], ["A", "B"])
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
@@ -374,6 +421,73 @@ class TuiStateContractTests(unittest.TestCase):
         self.assertIn("tests/unit/", rendered)
         self.assertIn("M test_cli.py", rendered)
 
+    def test_left_pane_renders_grouped_comment_navigator(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+
+            def addnstr(self, y, x, text, n, attr):
+                self.calls.append((y, x, text[:n]))
+
+        first = create_review_file("src/app.py", "added", [], ["alpha", "beta"])
+        second = create_review_file("tests/test_app.py", "added", [], ["case"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [first, second])
+        state.add_comment("First comment that is deliberately long enough to truncate")
+        state.select_range("src/app.py", 1, 1)
+        state.add_comment("Second comment")
+        state.select_file("tests/test_app.py")
+        state.add_comment("Third comment")
+        app = ReviewApp(state)
+        app.content_height = 12
+        app.left_width = 28
+        screen = FakeScreen()
+
+        app._draw_file_pane(screen, 12, 100)
+
+        rendered = [(y, text.strip()) for y, _, text in screen.calls]
+        self.assertIn((6, "Review comments"), rendered)
+        self.assertTrue(any(y > 6 and text == "src/app.py" for y, text in rendered))
+        self.assertTrue(any(y > 6 and text.startswith("1 First comment") and text.endswith("...") for y, text in rendered))
+        self.assertTrue(any(y > 6 and text.startswith("2 Second comment") for y, text in rendered))
+        self.assertTrue(any(y > 6 and text == "tests/test_app.py" for y, text in rendered))
+
+    def test_comment_pane_navigation_focuses_comment_in_review_pane(self):
+        file = create_review_file("src/app.py", "added", [], ["alpha", "beta"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        first = state.add_comment("First comment")
+        state.select_range("src/app.py", 1, 1)
+        second = state.add_comment("Second comment")
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        app = ReviewApp(state)
+        app.file_pane_visible = True
+        app.focus = "comments"
+        app.content_height = 12
+
+        app._focus_comment_pane_selection()
+        self.assertEqual(state.selected_comment_id, first.id)
+        app._handle_key("j")
+
+        self.assertEqual(state.selected_comment_id, second.id)
+        active_index = state.active_document_index()
+        self.assertIsNotNone(active_index)
+        self.assertEqual(state.document_items()[active_index].comment.id, second.id)
+
+        app._handle_key("k")
+        self.assertEqual(state.selected_comment_id, first.id)
+
+    def test_tab_cycles_review_file_comments_when_left_pane_is_visible(self):
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [])
+        app = ReviewApp(state)
+        app.file_pane_visible = True
+
+        app._handle_key("\t")
+        self.assertEqual(app.focus, "file")
+        app._handle_key("\t")
+        self.assertEqual(app.focus, "comments")
+        app._handle_key("\t")
+        self.assertEqual(app.focus, "review")
+
     def test_file_pane_navigation_follows_rendered_tree_file_order(self):
         files = [
             create_review_file("src/review/app.py", "modified", ["a"], ["b"]),
@@ -384,10 +498,10 @@ class TuiStateContractTests(unittest.TestCase):
         app.content_height = 20
         state.file_pane_index = 1
 
-        app._handle_file_key(curses.KEY_DOWN)
+        app._handle_file_key("j")
         self.assertEqual(state.file_pane_index, 0)
 
-        app._handle_file_key(curses.KEY_UP)
+        app._handle_file_key("k")
         self.assertEqual(state.file_pane_index, 1)
 
     def test_t_shortcut_hides_and_shows_file_pane(self):

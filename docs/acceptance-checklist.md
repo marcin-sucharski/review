@@ -45,6 +45,10 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] File pane can be shown with `T`.
 - [ ] File pane lists changed files.
 - [ ] File pane renders changed files as a collapsed directory tree.
+- [ ] Left pane includes a comment list below the file tree.
+- [ ] Comment list groups comments by file.
+- [ ] Comment list entries include line number or range and a shortened comment preview.
+- [ ] Selecting a comment list entry focuses the inline comment in the review pane.
 - [ ] Review pane shows one continuous document for all files.
 - [ ] Selecting a file scrolls the review pane.
 - [ ] Scrolling review pane updates highlighted file.
@@ -76,6 +80,7 @@ Use this checklist to decide whether the initial implementation is complete.
 ## Navigation
 
 - [ ] `Tab` switches panes.
+- [ ] `Tab` cycles through review pane, file tree, and comment list when the left pane is visible.
 - [ ] `T` shows and hides the file pane.
 - [ ] File pane arrow navigation works.
 - [ ] File pane arrow navigation follows rendered tree file order.
@@ -132,6 +137,8 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Stdout delivery prints the formatted review.
 - [ ] Tmux delivery sends the same formatted review.
 - [ ] Tmux delivery presses Enter.
+- [ ] `--output-format` / `-o` supports `xml` and `md`, defaulting to `xml`.
+- [ ] The selected output format is used for stdout, tmux delivery, and archive JSON.
 - [ ] Tmux failures do not lose comments.
 - [ ] Every non-empty review is archived before delivery.
 - [ ] Empty reviews are not archived.
@@ -147,6 +154,10 @@ Use this checklist to decide whether the initial implementation is complete.
 
 ## Output Format
 
+- [ ] Default non-empty output is XML-structured under `review_feedback`.
+- [ ] Default non-empty output parses as XML.
+- [ ] Markdown output is available with `--output-format md` and `-o md`.
+- [ ] Markdown output uses stable headings and safe fenced blocks.
 - [ ] Output includes review source.
 - [ ] Branch output includes target branch.
 - [ ] Comments are grouped by file.
@@ -155,7 +166,8 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Each comment includes selected context lines.
 - [ ] Each comment includes comment body.
 - [ ] Deleted-line comments are labeled as old-side lines.
-- [ ] Markdown fences handle code containing backticks.
+- [ ] XML metacharacters in code and comments are escaped.
+- [ ] Markdown fences in code and comments are preserved as text.
 
 ## Automated Tests
 

@@ -497,6 +497,13 @@ class ReviewState:
         ]
         return candidates[0] if candidates else None
 
+    def select_comment(self, comment_id: str) -> int:
+        for index, item in enumerate(self.document_items()):
+            if item.kind == "comment" and item.comment is not None and item.comment.id == comment_id:
+                self.select_document_index(index)
+                return index
+        return self.selected_document_index()
+
     def update_comment(self, comment_id: str, body: str) -> ReviewComment | None:
         body = body.rstrip()
         if not body.strip():

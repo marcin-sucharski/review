@@ -11,10 +11,10 @@ from .file_tree import FileTreeRow, build_file_tree, file_tree_row_index
 from .highlight import syntax_spans
 
 
-Focus = Literal["file", "review"]
+Focus = Literal["file", "comments", "review"]
 CommandHandler = Callable[[], None]
 GUTTER_WIDTH = 8
-INITIAL_STATUS_MESSAGE = "Tab switches panes. T toggles files. z centers code. :q quits."
+INITIAL_STATUS_MESSAGE = "Tab switches panes. T toggles left pane. z centers code. :q quits."
 NO_SELECTED_COMMENT_MESSAGE = "No comment is attached to the selected line."
 INTERRUPT_CONFIRMATION_MESSAGE = "Press Ctrl+C again to quit review."
 MOUSE_SCROLL_LINES = 3
@@ -88,11 +88,22 @@ class DrawFrame:
         return any(start <= row_index <= end for start, end in self.comment_ranges.get(file_path, ()))
 
 
+@dataclass(frozen=True)
+class CommentPaneRow:
+    kind: Literal["file", "comment"]
+    file_index: int
+    file_path: str
+    text: str = ""
+    comment: ReviewComment | None = None
+
+
 class ReviewApp:
     def __init__(self, state: ReviewState):
         self.state = state
         self.focus: Focus = "review"
         self.file_scroll = 0
+        self.comment_scroll = 0
+        self.comment_pane_index = 0
         self.review_scroll = 0
         self.command_mode = False
         self.command_buffer = ""
@@ -163,17 +174,33 @@ class ReviewApp:
             for y in range(self.content_height):
                 self._safe_addnstr(stdscr, y, self.left_width, "|", 1, self._style("muted"))
             self._draw_file_pane(stdscr, height, width)
-        elif self.focus == "file":
+        elif self.focus in {"file", "comments"}:
             self.focus = "review"
         self._draw_review_pane(stdscr, height, width)
         self._draw_status(stdscr, height, width)
         stdscr.refresh()
 
     def _draw_file_pane(self, stdscr, height: int, width: int) -> None:
+        file_start, file_height, comment_start, comment_height = self._left_pane_layout()
+        self._draw_file_tree_region(stdscr, file_start, file_height)
+        self._draw_comment_list_region(stdscr, comment_start, comment_height)
+
+    def _left_pane_layout(self) -> tuple[int, int, int, int]:
+        if self.content_height <= 3:
+            return 0, self.content_height, self.content_height, 0
+        file_height = max(2, (self.content_height + 1) // 2)
+        comment_height = max(0, self.content_height - file_height)
+        return 0, file_height, file_height, comment_height
+
+    def _draw_file_tree_region(self, stdscr, y: int, height: int) -> None:
+        if height <= 0:
+            return
         title = " Modified files "
         attr = curses.A_BOLD | (curses.A_REVERSE if self.focus == "file" else self._style("header"))
-        self._safe_addnstr(stdscr, 0, 0, title.ljust(self.left_width), self.left_width, attr)
-        visible_height = self.content_height - 1
+        self._safe_addnstr(stdscr, y, 0, title.ljust(self.left_width), self.left_width, attr)
+        visible_height = max(0, height - 1)
+        if visible_height <= 0:
+            return
         rows = self._file_tree_rows()
         comment_counts = self._comment_counts_by_file()
         selected_row = file_tree_row_index(rows, self.state.file_pane_index) if rows else 0
@@ -182,7 +209,7 @@ class ReviewApp:
             self.file_scroll = selected_row
         elif selected_row >= self.file_scroll + visible_height:
             self.file_scroll = selected_row - visible_height + 1
-        for screen_row, row_index in enumerate(range(self.file_scroll, min(len(rows), self.file_scroll + visible_height)), start=1):
+        for screen_row, row_index in enumerate(range(self.file_scroll, min(len(rows), self.file_scroll + visible_height)), start=y + 1):
             row = rows[row_index]
             text = self._file_tree_text(row, comment_counts)
             selected = row.kind == "file" and row.file_index == self.state.file_pane_index
@@ -192,6 +219,41 @@ class ReviewApp:
             if row.kind == "directory":
                 row_attr |= curses.A_BOLD | self._style("muted")
             self._safe_addnstr(stdscr, screen_row, 0, text.ljust(self.left_width), self.left_width, row_attr)
+
+    def _draw_comment_list_region(self, stdscr, y: int, height: int) -> None:
+        if height <= 0:
+            return
+        title = " Review comments "
+        attr = curses.A_BOLD | (curses.A_REVERSE if self.focus == "comments" else self._style("header"))
+        self._safe_addnstr(stdscr, y, 0, title.ljust(self.left_width), self.left_width, attr)
+        visible_height = max(0, height - 1)
+        if visible_height <= 0:
+            return
+        rows = self._comment_pane_rows()
+        if not rows:
+            self.comment_scroll = 0
+            self.comment_pane_index = 0
+            self._safe_addnstr(stdscr, y + 1, 0, " No comments".ljust(self.left_width), self.left_width, self._style("muted"))
+            return
+        selected_row = self._selected_comment_pane_row_index(rows)
+        self._ensure_comment_pane_scroll(rows, selected_row, visible_height)
+        for screen_row, row_index in enumerate(range(self.comment_scroll, min(len(rows), self.comment_scroll + visible_height)), start=y + 1):
+            row = rows[row_index]
+            selected = row_index == selected_row and row.kind == "comment"
+            text = self._comment_pane_text(row)
+            row_attr = curses.A_REVERSE if selected else curses.A_NORMAL
+            if self.focus == "comments" and selected:
+                row_attr |= curses.A_BOLD
+            if row.kind == "file":
+                row_attr |= curses.A_BOLD | self._style("muted")
+            self._safe_addnstr(stdscr, screen_row, 0, text.ljust(self.left_width), self.left_width, row_attr)
+
+    def _ensure_comment_pane_scroll(self, rows: list[CommentPaneRow], selected_row: int, visible_height: int) -> None:
+        self.comment_scroll = max(0, min(self.comment_scroll, max(0, len(rows) - visible_height)))
+        if selected_row < self.comment_scroll:
+            self.comment_scroll = selected_row
+        elif selected_row >= self.comment_scroll + visible_height:
+            self.comment_scroll = selected_row - visible_height + 1
 
     def _file_tree_rows(self) -> list[FileTreeRow]:
         cache_key = tuple((file.path, file.old_path, file.status) for file in self.state.files)
@@ -216,6 +278,45 @@ class ReviewApp:
         comments = (comment_counts or {}).get(file.path, 0)
         comment_text = f" [{comments}]" if comments else ""
         return f" {indent}{file.status_marker()} {row.label}{comment_text}"
+
+    def _comment_pane_rows(self) -> list[CommentPaneRow]:
+        rows: list[CommentPaneRow] = []
+        for file_index, file in enumerate(self.state.files):
+            comments = self.state.comments_for_file(file.path)
+            if not comments:
+                continue
+            rows.append(CommentPaneRow("file", file_index, file.path, text=file.display_path))
+            for comment in comments:
+                rows.append(CommentPaneRow("comment", file_index, file.path, comment=comment))
+        return rows
+
+    def _selected_comment_pane_row_index(self, rows: list[CommentPaneRow]) -> int:
+        if self.state.selected_comment_id is not None:
+            for index, row in enumerate(rows):
+                if row.comment is not None and row.comment.id == self.state.selected_comment_id:
+                    self.comment_pane_index = index
+                    return index
+        selectable = self._comment_pane_selectable_rows(rows)
+        if self.comment_pane_index in selectable:
+            return self.comment_pane_index
+        if selectable:
+            self.comment_pane_index = selectable[0]
+            return selectable[0]
+        self.comment_pane_index = 0
+        return 0
+
+    @staticmethod
+    def _comment_pane_selectable_rows(rows: list[CommentPaneRow]) -> list[int]:
+        return [index for index, row in enumerate(rows) if row.kind == "comment" and row.comment is not None]
+
+    def _comment_pane_text(self, row: CommentPaneRow) -> str:
+        if row.kind == "file":
+            return _truncate(f" {row.text}", self.left_width)
+        if row.comment is None:
+            return ""
+        line = _comment_line_label(row.comment).rjust(4)
+        body = " ".join(row.comment.body.split())
+        return _truncate(f" {line} {body}", self.left_width)
 
     def _draw_review_pane(self, stdscr, height: int, width: int) -> None:
         right_x = self.left_width + 1 if self.file_pane_visible else 0
@@ -470,6 +571,8 @@ class ReviewApp:
             return
         if self.focus == "file":
             self._handle_file_key(key)
+        elif self.focus == "comments":
+            self._handle_comment_pane_key(key)
         else:
             self._handle_review_key(key)
 
@@ -503,7 +606,13 @@ class ReviewApp:
 
     def _switch_focus(self) -> None:
         if self.file_pane_visible:
-            self.focus = "review" if self.focus == "file" else "file"
+            if self.focus == "review":
+                self.focus = "file"
+            elif self.focus == "file":
+                self.focus = "comments"
+                self._focus_comment_pane_selection()
+            else:
+                self.focus = "review"
         else:
             self.focus = "review"
 
@@ -512,9 +621,9 @@ class ReviewApp:
         self.command_buffer = ""
 
     def _handle_file_key(self, key: int | str) -> None:
-        if key == curses.KEY_UP:
+        if _is_up_key(key):
             self.review_scroll = self._move_file_tree_selection(-1)
-        elif key == curses.KEY_DOWN:
+        elif _is_down_key(key):
             self.review_scroll = self._move_file_tree_selection(1)
         elif key == curses.KEY_PPAGE:
             self.review_scroll = self._move_file_tree_selection(-max(1, self.content_height - 3))
@@ -525,10 +634,25 @@ class ReviewApp:
                 self.review_scroll = self.state.select_file(self.state.files[self.state.file_pane_index].path)
                 self.focus = "review"
 
+    def _handle_comment_pane_key(self, key: int | str) -> None:
+        if _is_up_key(key):
+            self._move_comment_pane_selection(-1)
+        elif _is_down_key(key):
+            self._move_comment_pane_selection(1)
+        elif key == curses.KEY_PPAGE:
+            self._move_comment_pane_selection(-max(1, self._comment_pane_visible_height()))
+        elif key == curses.KEY_NPAGE:
+            self._move_comment_pane_selection(max(1, self._comment_pane_visible_height()))
+        elif _is_enter(key):
+            self._focus_comment_pane_selection(prefer_current=True)
+            self.focus = "review"
+        elif _is_comment_delete_key(key):
+            self._delete_selected_comment()
+
     def _handle_review_key(self, key: int | str) -> None:
-        if key == curses.KEY_UP:
+        if _is_up_key(key):
             self._move_review_selection(-1)
-        elif key == curses.KEY_DOWN:
+        elif _is_down_key(key):
             self._move_review_selection(1)
         elif key == curses.KEY_PPAGE:
             self._page_review_selection(-1)
@@ -538,7 +662,7 @@ class ReviewApp:
             self._move_review_selection(-1, extend=True)
         elif key in SHIFT_DOWN_KEYS:
             self._move_review_selection(1, extend=True)
-        elif key == curses.KEY_DC:
+        elif _is_comment_delete_key(key):
             self._delete_selected_comment()
         elif _is_enter(key):
             self._activate_review_selection()
@@ -674,9 +798,9 @@ class ReviewApp:
         self.file_pane_visible = not self.file_pane_visible
         if not self.file_pane_visible:
             self.focus = "review"
-            self.status_message = "Files pane hidden. Press T to show it."
+            self.status_message = "Left pane hidden. Press T to show it."
         else:
-            self.status_message = "Files pane shown. Press T to hide it."
+            self.status_message = "Left pane shown. Press T to hide it."
 
     def _move_file_tree_selection(self, delta: int) -> int:
         rows = self._file_tree_rows()
@@ -692,6 +816,46 @@ class ReviewApp:
         row = rows[file_rows[position]]
         assert row.file_index is not None
         return self.state.select_file(self.state.files[row.file_index].path)
+
+    def _move_comment_pane_selection(self, delta: int) -> None:
+        rows = self._comment_pane_rows()
+        selectable = self._comment_pane_selectable_rows(rows)
+        if not selectable:
+            self.status_message = "No review comments."
+            return
+        current_row = self._selected_comment_pane_row_index(rows)
+        try:
+            position = selectable.index(current_row)
+        except ValueError:
+            position = 0
+        position = max(0, min(len(selectable) - 1, position + delta))
+        self.comment_pane_index = selectable[position]
+        self._focus_comment_pane_selection(rows, prefer_current=True)
+
+    def _focus_comment_pane_selection(self, rows: list[CommentPaneRow] | None = None, *, prefer_current: bool = False) -> None:
+        if rows is None:
+            rows = self._comment_pane_rows()
+        selectable = self._comment_pane_selectable_rows(rows)
+        if not selectable:
+            self.status_message = "No review comments."
+            return
+        if prefer_current and self.comment_pane_index in selectable:
+            row_index = self.comment_pane_index
+        else:
+            row_index = self._selected_comment_pane_row_index(rows)
+        if row_index not in selectable:
+            row_index = selectable[0]
+        row = rows[row_index]
+        if row.comment is None:
+            return
+        self.comment_pane_index = row_index
+        self.review_scroll = self.state.select_comment(row.comment.id)
+        self._keep_selection_in_editor_view()
+        self.status_message = "Focused review comment."
+
+    def _comment_pane_visible_height(self) -> int:
+        _, _, _, comment_height = self._left_pane_layout()
+        return max(1, comment_height - 1)
 
     def _center_review_on_selection(self) -> None:
         active = self.state.active_document_index()
@@ -729,7 +893,10 @@ class ReviewApp:
         if self._handle_mouse_wheel(button):
             return
         if x < self.left_width:
-            self._handle_file_pane_mouse(y)
+            if self._comment_pane_contains_y(y):
+                self._handle_comment_pane_mouse(y)
+            else:
+                self._handle_file_pane_mouse(y)
             return
         self._handle_review_pane_mouse(y, button)
 
@@ -766,12 +933,35 @@ class ReviewApp:
         if row is not None and row.kind == "file" and row.file_index is not None:
             self.review_scroll = self.state.select_file(self.state.files[row.file_index].path)
 
+    def _comment_pane_contains_y(self, y: int) -> bool:
+        _, _, comment_start, comment_height = self._left_pane_layout()
+        return comment_height > 0 and comment_start <= y < comment_start + comment_height
+
     def _file_tree_row_at(self, y: int) -> FileTreeRow | None:
+        _, _, comment_start, _ = self._left_pane_layout()
+        if y >= comment_start:
+            return None
         rows = self._file_tree_rows()
         row_index = self.file_scroll + y - 1
         if 0 <= row_index < len(rows):
             return rows[row_index]
         return None
+
+    def _handle_comment_pane_mouse(self, y: int) -> None:
+        self.focus = "comments"
+        self._clear_mouse_drag()
+        rows = self._comment_pane_rows()
+        row_index = self._comment_pane_row_index_at(y)
+        if row_index is not None and 0 <= row_index < len(rows) and rows[row_index].kind == "comment":
+            self.comment_pane_index = row_index
+            self._focus_comment_pane_selection(rows, prefer_current=True)
+
+    def _comment_pane_row_index_at(self, y: int) -> int | None:
+        _, _, comment_start, comment_height = self._left_pane_layout()
+        if comment_height <= 1 or y <= comment_start:
+            return None
+        row_index = self.comment_scroll + y - comment_start - 1
+        return row_index if row_index >= 0 else None
 
     def _handle_review_pane_mouse(self, y: int, button: int) -> None:
         self.focus = "review"
@@ -983,8 +1173,20 @@ def _is_escape(key: int | str) -> bool:
     return key in (27, "\x1b")
 
 
+def _is_up_key(key: int | str) -> bool:
+    return key in (curses.KEY_UP, "k", ord("k"))
+
+
+def _is_down_key(key: int | str) -> bool:
+    return key in (curses.KEY_DOWN, "j", ord("j"))
+
+
 def _is_backspace(key: int | str) -> bool:
     return key in (curses.KEY_BACKSPACE, 127, 8, "\x7f", "\b")
+
+
+def _is_comment_delete_key(key: int | str) -> bool:
+    return key == curses.KEY_DC or _is_backspace(key)
 
 
 def _printable_key(key: int | str) -> str | None:
@@ -1030,6 +1232,26 @@ def _wrap_text_segments(text: str, width: int) -> list[tuple[str, int]]:
                 chunks.append((raw_line[start : start + width], global_offset + start))
         global_offset += len(raw_line) + 1
     return chunks
+
+
+def _truncate(text: str, width: int) -> str:
+    width = max(0, width)
+    if len(text) <= width:
+        return text
+    if width <= 3:
+        return text[:width]
+    return text[: width - 3] + "..."
+
+
+def _comment_line_label(comment: ReviewComment) -> str:
+    numbers = [line.primary_line for line in comment.selected_lines if line.primary_line is not None]
+    if not numbers:
+        return "?"
+    start = min(numbers)
+    end = max(numbers)
+    if start == end:
+        return str(start)
+    return f"{start}-{end}"
 
 
 def _comment_title(comment: ReviewComment) -> str:

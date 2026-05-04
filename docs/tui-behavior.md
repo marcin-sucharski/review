@@ -4,7 +4,7 @@
 
 The terminal UI opens in a review-first layout. The file pane is hidden by default and the review pane is focused.
 
-Pressing `T` shows the file pane. When the file pane is visible, the terminal UI uses a two-pane vertical layout.
+Pressing `T` shows the left navigation pane. When the left pane is visible, the terminal UI uses a two-pane vertical layout. The left pane is split vertically: the upper region shows modified files and the lower region shows saved review comments.
 
 ```text
 +-----------------------------+------------------------------------------------+
@@ -12,9 +12,10 @@ Pressing `T` shows the file pane. When the file pane is visible, the terminal UI
 |                             |                                                |
 | > src/example.py            |  12  def example():                            |
 |   tests/test_example.py     |  13      value = compute()                     |
-|                             |  14 +    return value                          |
+| Review comments             |  14 +    return value                          |
+|   src/example.py            |                                                |
+| >  14 Use explicit result   |      [comment attached to line 14]             |
 |                             |                                                |
-|                             |      [comment attached to line 14]             |
 +-----------------------------+------------------------------------------------+
 | :q                                                                           |
 +------------------------------------------------------------------------------+
@@ -30,7 +31,7 @@ Exactly one pane is focused at a time.
 
 Focused pane indicators may include border styling, title styling, cursor visibility, or selection color.
 
-`Tab` switches focus between the file pane and review pane when the file pane is visible. When the file pane is hidden, `Tab` keeps focus in the review pane.
+`Tab` switches focus between the review pane, file tree, and comment list when the left pane is visible. When the left pane is hidden, `Tab` keeps focus in the review pane.
 
 Mouse click inside a pane focuses that pane.
 
@@ -58,6 +59,17 @@ Suggested markers:
 The highlighted file is the file currently visible in the review pane or selected by the user.
 
 The file pane is not required to be visible for file synchronization to occur. When it is shown again, the highlighted file should match the active review selection or current scroll location.
+
+## Comment List Pane
+
+The comment list pane appears below the file tree when the left pane is visible. It lists all saved review comments grouped by file.
+
+Each file group should display the file path. Each comment row should display:
+
+- referenced line number or line range,
+- shortened preview of the first part of the comment body.
+
+`Up`/`k` and `Down`/`j` move between comment rows. Moving to a comment focuses the corresponding inline saved comment in the review pane and scrolls the review pane enough to make it visible. `Enter` keeps that comment selected and returns focus to the review pane. `Delete` and `Backspace` delete the selected saved comment. Mouse click on a comment row has the same focusing behavior.
 
 ## Review Pane
 
@@ -158,8 +170,8 @@ File pane keys:
 
 | Key | Behavior |
 | --- | --- |
-| `Up` | Select previous file |
-| `Down` | Select next file |
+| `Up` / `k` | Select previous file |
+| `Down` / `j` | Select next file |
 | `PageUp` | Move up by page |
 | `PageDown` | Move down by page |
 | `Enter` | Scroll review pane to selected file |
@@ -168,13 +180,14 @@ Review pane keys:
 
 | Key | Behavior |
 | --- | --- |
-| `Up` | Select previous selectable row |
-| `Down` | Select next selectable row |
+| `Up` / `k` | Select previous selectable row |
+| `Down` / `j` | Select next selectable row |
 | `PageUp` | Scroll/select up by page |
 | `PageDown` | Scroll/select down by page |
 | `Shift+Up` | Extend selection upward |
 | `Shift+Down` | Extend selection downward |
 | `Enter` | Comment selected code or activate expansion row |
+| `Delete` / `Backspace` | Delete the selected saved comment |
 
 Arrow navigation should behave like an editor: the selected row moves within the viewport until it reaches the lower edge, then the viewport scrolls while keeping roughly three rows below the selected row. Page navigation moves by a viewport and preserves the selected row's screen offset when possible.
 
@@ -187,6 +200,8 @@ Comment input keys:
 | `Esc` | Cancel comment input |
 
 When `Ctrl+J` inserts a newline at the end of the comment buffer, the newly created blank comment row should render immediately without waiting for another character.
+
+While editing a comment message, `j` and `k` are inserted as normal text rather than treated as navigation keys.
 
 ## Mouse Behavior
 
