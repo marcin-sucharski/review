@@ -37,8 +37,8 @@ class CliPromptTests(unittest.TestCase):
 
         title, options = select_option.call_args.args
         self.assertEqual(title, "Review source")
-        self.assertEqual([option.value for option in options], ["uncommitted", "branch"])
-        self.assertIn("PR-style", options[1].label)
+        self.assertEqual([option.value for option in options], ["branch", "uncommitted"])
+        self.assertIn("PR-style", options[0].label)
         self.assertFalse(select_option.call_args.kwargs.get("cancel_requires_double", False))
 
     def test_prompt_branch_uses_selectable_branch_menu(self):

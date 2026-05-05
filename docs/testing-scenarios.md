@@ -63,6 +63,7 @@ Fixture files should cover required languages:
 | User selects branch comparison with unstaged changes | PR-style review includes unstaged local changes |
 | User selects branch comparison with staged and unstaged edits on the same line | PR-style review shows only the final working-tree line |
 | User selects branch comparison with untracked files | PR-style review includes untracked files |
+| Startup review-source menu opens | PR-style review is listed above uncommitted review |
 | Branch comparison target does not exist | Friendly error |
 | Git command fails | Friendly error without raw traceback |
 | User presses `Ctrl+C` in startup review-source prompt | Exits cleanly on first press |
@@ -85,7 +86,7 @@ Fixture files should cover required languages:
 | Many branches exist | Branch picker shows only five target branches at a time |
 | User types in branch picker | Branch list filters by substring without focusing a search box |
 | Branch picker renders comparison | Current branch appears on the left and target branch appears after `->` |
-| Common target branches exist | `master` and `main` appear before date-sorted topic branches, with `master` first |
+| Common target branches exist | `origin/master`, `master`, and `main` appear before date-sorted topic branches, with `origin/master` first |
 | Topic branches have different commit dates | More recently committed branches appear earlier |
 | Current branch has commits not on target | PR-style diff includes feature commits |
 | Current branch has uncommitted changes on top of feature commits | PR-style diff includes the final working-tree state against the target branch |
@@ -197,6 +198,7 @@ Fixture files should cover required languages:
 | Next file reaches top | Sticky header updates |
 | Line numbers visible | Code rows include numbers |
 | Long lines wrap | Lines wrap without breaking layout |
+| Multiple long wrapped lines near file end | Arrow navigation keeps the selected logical line fully inside the visible physical rows |
 | Terminal 80x24 | UI remains usable |
 | Very narrow terminal | Clear too-small message or graceful layout |
 | Resize terminal | Selection and scroll mostly preserved |

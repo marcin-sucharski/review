@@ -179,8 +179,8 @@ def prompt_source() -> str:
     return select_option(
         "Review source",
         [
-            MenuOption("Review uncommitted changes", "uncommitted", "working tree and staged changes"),
             MenuOption("Review PR-style changes", "branch", "compare branch and current uncommitted changes"),
+            MenuOption("Review uncommitted changes", "uncommitted", "working tree and staged changes"),
         ],
     )
 

@@ -39,7 +39,7 @@ If no changes are available for the selected review source, it reports that no c
 
 If Git commands fail, the CLI displays the failing operation and a concise explanation.
 
-When interactive source, branch, or delivery choices are needed, the CLI should render a compact inline menu using only a few terminal lines. Selection uses `Up`, `Down`, and `Enter`; `q` and `Esc` cancel simple option menus such as review-source and review-history selection. The menu must avoid full-screen dark-background presentation so it remains readable in light terminals.
+When interactive source, branch, or delivery choices are needed, the CLI should render a compact inline menu using only a few terminal lines. Selection uses `Up`, `Down`, and `Enter`; `q` and `Esc` cancel simple option menus such as review-source and review-history selection. The review-source menu lists PR-style review above uncommitted review. The menu must avoid full-screen dark-background presentation so it remains readable in light terminals.
 
 Inline menus must account for terminal wrapping in narrow terminals. Long option labels may wrap visually, but moving the selection must clear the full previously rendered menu and redraw in place without leaving stale wrapped rows behind.
 
@@ -47,7 +47,7 @@ In the initial review-source menu, one `Ctrl+C` cancels the program. After that 
 
 For branch comparison, the CLI must present or accept a target branch. Branch ordering should keep common merge targets easy to reach and make recent topic branches easy to find.
 
-When selecting a PR-style target branch interactively, the branch picker shows the current branch on the left and the selected target branch on the right, for example `feature/change -> main`. It displays at most five target branches at once. `Up` and `Down` move the highlighted target. Typing any printable character filters the branch list by substring without requiring a separate search-field focus. `Backspace` edits the filter. Common target branches should appear first when present, with `master` above `main`; remaining branches are ordered by most recent commit date.
+When selecting a PR-style target branch interactively, the branch picker shows the current branch on the left and the selected target branch on the right, for example `feature/change -> main`. It displays at most five target branches at once. `Up` and `Down` move the highlighted target. Typing any printable character filters the branch list by substring without requiring a separate search-field focus. `Backspace` edits the filter. Common target branches should appear first when present, with `origin/master` above local `master`, then local `main`; remaining branches are ordered by most recent commit date.
 
 ## Review Sources
 

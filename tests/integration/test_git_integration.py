@@ -164,7 +164,7 @@ class GitIntegrationTests(unittest.TestCase):
         branches = default_branch_candidates(self.root)
         self.assertIn("main", branches)
 
-    def test_default_branch_candidates_prioritize_master_main_then_recent_branches(self):
+    def test_default_branch_candidates_prioritize_origin_master_master_main_then_recent_branches(self):
         git(self.root, "checkout", "-b", "old-topic")
         write(self.root, "old.txt", "old\n")
         git(self.root, "add", "old.txt")
@@ -178,10 +178,11 @@ class GitIntegrationTests(unittest.TestCase):
 
         git(self.root, "checkout", "main")
         git(self.root, "branch", "master")
+        git(self.root, "update-ref", "refs/remotes/origin/master", "HEAD")
 
         branches = default_branch_candidates(self.root)
 
-        self.assertEqual(branches[:2], ["master", "main"])
+        self.assertEqual(branches[:3], ["origin/master", "master", "main"])
         self.assertLess(branches.index("recent-topic"), branches.index("old-topic"))
 
     def test_collect_uncommitted_marks_binary_file(self):

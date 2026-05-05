@@ -96,15 +96,17 @@ def list_branches(root: Path) -> list[str]:
 
 
 def _common_branch_priority(branch: str) -> int:
-    if branch == "master":
+    if branch == "origin/master":
         return 0
-    if branch == "main":
+    if branch == "master":
         return 1
-    if branch.endswith("/master"):
+    if branch == "main":
         return 2
-    if branch.endswith("/main"):
+    if branch.endswith("/master"):
         return 3
-    return 4
+    if branch.endswith("/main"):
+        return 4
+    return 5
 
 
 def current_branch(root: Path) -> str:

@@ -79,7 +79,7 @@ The list should remove duplicates and symbolic refs such as `origin/HEAD`.
 
 Target branch ordering:
 
-1. common target branches first, with local `master` above local `main`, followed by remote `*/master` and `*/main`,
+1. common target branches first, with `origin/master` above local `master`, then local `main`, followed by other remote `*/master` and `*/main`,
 2. all remaining branches by descending last-commit date,
 3. branch name as a stable tie-breaker.
 

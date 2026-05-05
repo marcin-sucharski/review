@@ -16,6 +16,7 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Running outside Git shows a clear error.
 - [ ] Running with no changes exits cleanly.
 - [ ] Startup prompts for uncommitted or branch comparison review.
+- [ ] Startup source selection lists PR-style review above uncommitted review.
 - [ ] Startup source selection supports arrow-key navigation and Enter.
 - [ ] Startup and delivery menus are compact inline menus and remain readable in light terminals.
 - [ ] Startup, branch, delivery, and review-history menus redraw cleanly when option labels wrap in narrow terminals.
@@ -26,7 +27,7 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Branch target selection shows the current branch on the left and target branch after `->`.
 - [ ] Branch target selection shows at most five branches at once.
 - [ ] Branch target selection filters by typed substring without focusing a search box.
-- [ ] Branch target ordering puts `master` and `main` first in that order, then sorts remaining branches by last commit date.
+- [ ] Branch target ordering puts `origin/master` above local `master`, then local `main`, then sorts remaining branches by last commit date.
 - [ ] Branch target selection requires double `Ctrl+C` to cancel.
 - [ ] Canceling prompts exits cleanly.
 
@@ -101,6 +102,7 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Review pane arrow navigation works.
 - [ ] Review pane page navigation works.
 - [ ] Review pane arrow navigation behaves like an editor and scrolls only when the selection reaches the viewport edge.
+- [ ] Review pane arrow navigation keeps selected wrapped lines inside the visible physical terminal rows.
 - [ ] Review pane page navigation preserves the selected line's screen offset when possible.
 - [ ] Mouse click focuses panes.
 - [ ] Mouse click selects files and lines.

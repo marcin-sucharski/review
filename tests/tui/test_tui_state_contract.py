@@ -661,6 +661,28 @@ class TuiStateContractTests(unittest.TestCase):
         self.assertIsNotNone(active)
         self.assertEqual(active - app.review_scroll, app._review_viewport_height() - 4)
 
+    def test_review_navigation_keeps_wrapped_selection_inside_visible_rows_at_file_end(self):
+        long_text = " ".join(["wrapped"] * 18)
+        file = create_review_file("src/app.py", "added", [], [f"{index}: {long_text}" for index in range(8)])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        app = ReviewApp(state)
+        app.focus = "review"
+        app.content_height = 8
+        app.review_width = 34
+
+        for _ in range(20):
+            app._handle_review_key(curses.KEY_DOWN)
+
+        items = state.document_items()
+        active = state.active_document_index()
+        self.assertIsNotNone(active)
+        self.assertEqual(active, len(items) - 1)
+        active_top = app._review_rows_between(items, app.review_scroll, active, app.review_width)
+        active_height = app._review_item_height(items[active], app.review_width)
+
+        self.assertGreater(active_height, 1)
+        self.assertLessEqual(active_top + active_height, app._review_viewport_height())
+
     def test_page_navigation_keeps_screen_offset(self):
         file = create_review_file("src/app.py", "modified", [f"line {index}" for index in range(120)], [f"line {index}" for index in range(120)])
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])

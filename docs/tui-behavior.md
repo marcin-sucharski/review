@@ -198,7 +198,7 @@ Review pane keys:
 | `Enter` | Comment selected code or activate expansion row |
 | `Delete` / `Backspace` | Delete the selected saved comment |
 
-Arrow navigation should behave like an editor: the selected row moves within the viewport until it reaches the lower edge, then the viewport scrolls while keeping roughly three rows below the selected row. Page navigation moves by a viewport and preserves the selected row's screen offset when possible.
+Arrow navigation should behave like an editor: the selected row moves within the viewport until it reaches the lower edge, then the viewport scrolls while keeping roughly three rows below the selected row. Scroll calculations use rendered terminal rows, so a wrapped logical line is kept fully inside the visible review pane before navigation continues. Page navigation moves by a viewport and preserves the selected row's screen offset when possible.
 
 Search prompt keys:
 

@@ -10,8 +10,8 @@ The project must implement a CLI named `review`.
 
 On startup, the CLI asks whether the user wants to review:
 
-- uncommitted changes in the current Git working tree, or
 - changes in pull-request style against a selected branch.
+- uncommitted changes in the current Git working tree.
 
 After the selection, the CLI detects the corresponding Git changes and opens a terminal user interface.
 

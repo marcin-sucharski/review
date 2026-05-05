@@ -40,12 +40,12 @@ class GitParseTests(unittest.TestCase):
                 repository_root(Path("/tmp"))
         self.assertIn("git executable not found", str(ctx.exception))
 
-    def test_common_branch_sort_puts_master_above_main(self):
+    def test_common_branch_sort_puts_origin_master_above_local_master(self):
         branches = ["origin/main", "topic", "main", "origin/master", "master"]
 
         ordered = sorted(branches, key=lambda branch: git._branch_sort_key(branch, {}))
 
-        self.assertEqual(ordered[:4], ["master", "main", "origin/master", "origin/main"])
+        self.assertEqual(ordered[:4], ["origin/master", "master", "main", "origin/main"])
         self.assertEqual(ordered[4], "topic")
 
     def test_binary_review_file_creation_does_not_decode_blob_contents(self):

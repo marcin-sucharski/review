@@ -137,6 +137,7 @@ class ReviewApp:
         self.comment_cursor: tuple[int, int] | None = None
         self.left_width = 32
         self.content_height = 0
+        self.review_width = 80
         self._color_pairs: dict[tuple[int, int], int] = {}
         self._next_color_pair = 1
         self.command_handlers = self._build_command_handlers()
@@ -400,6 +401,7 @@ class ReviewApp:
     def _draw_review_pane(self, stdscr, height: int, width: int) -> None:
         right_x = self.left_width + 1 if self.file_pane_visible else 0
         right_width = width - right_x
+        self.review_width = right_width
         items = self.state.document_items()
         if not items:
             self._safe_addnstr(stdscr, 0, right_x, " No changes ", right_width - 1, curses.A_BOLD)
@@ -482,6 +484,20 @@ class ReviewApp:
             )
         if item.kind == "code" and item.line is not None and item.row_index is not None:
             return self._draw_code_item(stdscr, y, x, width, item, selected, frame)
+        return 1
+
+    def _review_item_height(self, item: DocumentItem, width: int, frame: DrawFrame | None = None) -> int:
+        if item.kind in {"file_header", "metadata", "expansion"}:
+            return 1
+        if item.kind == "comment" and item.comment is not None:
+            editing = self.comment_mode and self.editing_comment_id == item.comment.id
+            body = self.comment_buffer if editing else item.comment.body
+            return _comment_visual_height(body or " ", width)
+        if item.kind == "code" and item.line is not None:
+            height = _code_line_visual_height(item.line.text, width)
+            if frame is not None and self._should_draw_comment_input(item, frame):
+                height += _comment_visual_height(self.comment_buffer or " ", width)
+            return height
         return 1
 
     def _draw_full_width_row(self, stdscr, y: int, x: int, width: int, text: str, attr: int) -> int:
@@ -1295,28 +1311,25 @@ class ReviewApp:
             active = self.state.active_document_index()
         if items is None:
             items = self.state.document_items()
-        viewport = self._review_viewport_height()
-        max_scroll = max(0, len(items) - viewport)
         if active is None:
-            self.review_scroll = max(0, min(self.review_scroll, max_scroll))
+            self.review_scroll = max(0, min(self.review_scroll, self._max_review_scroll(items)))
             return
-        selected = active
-        if selected < self.review_scroll:
-            self.review_scroll = selected
-        elif selected >= self.review_scroll + viewport:
-            self.review_scroll = selected - viewport + 1
-        self.review_scroll = max(0, min(self.review_scroll, max_scroll))
+        self.review_scroll = self._scroll_for_visible_active(items, active, bottom_guard=0)
 
     def _select_first_visible_selectable(self) -> None:
         items = self.state.document_items()
         if not items:
             return
         viewport = self._review_viewport_height()
-        end = min(len(items), self.review_scroll + viewport)
-        for index in range(self.review_scroll, end):
+        width = self._current_review_width()
+        used = 0
+        for index in range(self.review_scroll, len(items)):
+            if used >= viewport:
+                break
             if items[index].selectable:
                 self.state.select_document_index(index)
                 return
+            used += self._review_item_height(items[index], width)
         self.state.select_document_index(self.review_scroll)
 
     def _sticky_header(self, items: list[DocumentItem]) -> str:
@@ -1331,16 +1344,53 @@ class ReviewApp:
         if active is None:
             return
         items = self.state.document_items()
-        viewport = self._review_viewport_height()
-        bottom_guard = 3
-        target_offset = max(0, viewport - 1 - bottom_guard)
-        max_scroll = max(0, len(items) - viewport)
-        if active < self.review_scroll:
-            self.review_scroll = active
-        elif active > self.review_scroll + target_offset:
-            self.review_scroll = active - target_offset
-        self.review_scroll = max(0, min(max_scroll, self.review_scroll))
+        self.review_scroll = self._scroll_for_visible_active(items, active, bottom_guard=3)
         self.state.update_file_highlight_for_document_index(active)
+
+    def _scroll_for_visible_active(self, items: list[DocumentItem], active: int, *, bottom_guard: int) -> int:
+        if not items:
+            return 0
+        active = max(0, min(active, len(items) - 1))
+        scroll = max(0, min(self.review_scroll, active))
+        width = self._current_review_width()
+        viewport = self._review_viewport_height()
+        target_bottom = max(1, viewport - max(0, bottom_guard))
+        active_height = self._review_item_height(items[active], width)
+
+        if active_height > target_bottom:
+            target_bottom = viewport
+        while scroll < active:
+            active_top = self._review_rows_between(items, scroll, active, width)
+            active_bottom = active_top + active_height
+            if active_top >= 0 and (active_bottom <= target_bottom or (active_height > target_bottom and active_top == 0)):
+                break
+            scroll += 1
+        return max(0, min(scroll, active))
+
+    def _review_rows_between(self, items: list[DocumentItem], start: int, end: int, width: int | None = None) -> int:
+        width = width or self._current_review_width()
+        start = max(0, min(start, len(items)))
+        end = max(0, min(end, len(items)))
+        if end <= start:
+            return 0
+        return sum(self._review_item_height(item, width) for item in items[start:end])
+
+    def _max_review_scroll(self, items: list[DocumentItem]) -> int:
+        if not items:
+            return 0
+        viewport = self._review_viewport_height()
+        width = self._current_review_width()
+        if self._review_rows_between(items, 0, len(items), width) <= viewport:
+            return 0
+        used = 0
+        for index in range(len(items) - 1, -1, -1):
+            used += self._review_item_height(items[index], width)
+            if used >= viewport:
+                return index
+        return 0
+
+    def _current_review_width(self) -> int:
+        return max(1, self.review_width)
 
     def _review_viewport_height(self) -> int:
         return max(1, self.content_height - 1)
@@ -1705,6 +1755,17 @@ def _key_sequence_text(sequence: list[int | str]) -> str:
 
 def _body_width(width: int) -> int:
     return max(10, width - GUTTER_WIDTH - 1)
+
+
+def _code_line_visual_height(text: str, width: int) -> int:
+    return max(1, len(_wrap_text_segments(text, _body_width(width))))
+
+
+def _comment_visual_height(text: str, width: int) -> int:
+    return max(
+        1,
+        sum(max(1, len(_wrap_text_segments(line, _body_width(width)))) for line in _comment_display_lines(text)),
+    )
 
 
 def _line_number_text(number: int | None, visual_offset: int) -> str:
