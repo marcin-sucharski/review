@@ -18,6 +18,8 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Startup prompts for uncommitted or branch comparison review.
 - [ ] Startup source selection supports arrow-key navigation and Enter.
 - [ ] Startup and delivery menus are compact inline menus and remain readable in light terminals.
+- [ ] Startup, branch, delivery, and review-history menus redraw cleanly when option labels wrap in narrow terminals.
+- [ ] Startup source selection can be cancelled with `q`.
 - [ ] Startup source menu exits on a single `Ctrl+C`.
 - [ ] Branch comparison allows selecting a target branch.
 - [ ] Branch target selection supports arrow-key navigation and Enter.
@@ -175,6 +177,7 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Each non-empty review creates a separate JSON file.
 - [ ] `review ls` lists at most 10 recent archived reviews, one per line.
 - [ ] `review display` lets the user select an archived review and prints it to stdout.
+- [ ] `review display` selection can be cancelled with `q`.
 - [ ] `review display` keeps interactive selection prompts off stdout so redirection captures only the selected review message.
 - [ ] `review display --file` saves the selected archived review to a timestamped local file.
 - [ ] Archive history commands work outside Git repositories.

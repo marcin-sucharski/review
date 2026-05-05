@@ -39,7 +39,9 @@ If no changes are available for the selected review source, it reports that no c
 
 If Git commands fail, the CLI displays the failing operation and a concise explanation.
 
-When interactive source, branch, or delivery choices are needed, the CLI should render a compact inline menu using only a few terminal lines. Selection uses `Up`, `Down`, and `Enter`; the menu must avoid full-screen dark-background presentation so it remains readable in light terminals.
+When interactive source, branch, or delivery choices are needed, the CLI should render a compact inline menu using only a few terminal lines. Selection uses `Up`, `Down`, and `Enter`; `q` and `Esc` cancel simple option menus such as review-source and review-history selection. The menu must avoid full-screen dark-background presentation so it remains readable in light terminals.
+
+Inline menus must account for terminal wrapping in narrow terminals. Long option labels may wrap visually, but moving the selection must clear the full previously rendered menu and redraw in place without leaving stale wrapped rows behind.
 
 In the initial review-source menu, one `Ctrl+C` cancels the program. After that first source choice is accepted, cancellation is intentionally harder: branch selection, delivery selection, and the TUI require two consecutive `Ctrl+C` presses before exiting.
 

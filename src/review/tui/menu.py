@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import select
 import os
+import re
+import shutil
 import sys
 import termios
 import tty
@@ -21,6 +23,8 @@ KEY_SEQUENCES = {
     b"\x1b[4~": "end",
 }
 BRANCH_PAGE_SIZE = 5
+ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+OPTION_CANCEL_KEYS = {"q", "Q"}
 
 
 @dataclass(frozen=True)
@@ -83,7 +87,7 @@ def _select_branch_inline(
 ) -> str:
     input_fd = input_stream.fileno()
     old_settings = termios.tcgetattr(input_fd)
-    printed_lines = 0
+    printed_rows = 0
     selected = 0
     query = ""
     cancel_armed = False
@@ -101,14 +105,7 @@ def _select_branch_inline(
                 use_color=True,
                 cancel_armed=cancel_armed,
             )
-            if printed_lines:
-                output_stream.write(f"\x1b[{printed_lines}F")
-            render_count = max(printed_lines, len(lines))
-            for index in range(render_count):
-                line = lines[index] if index < len(lines) else ""
-                output_stream.write("\r\x1b[2K" + line + "\n")
-            output_stream.flush()
-            printed_lines = render_count
+            printed_rows = _replace_rendered_menu(output_stream, printed_rows, lines)
 
             key = _read_key(input_fd)
             if key == "up":
@@ -125,16 +122,16 @@ def _select_branch_inline(
                 cancel_armed = False
             elif key == "enter":
                 if filtered:
-                    _clear_rendered_menu(output_stream, printed_lines)
+                    _clear_rendered_menu(output_stream, printed_rows)
                     return filtered[selected]
             elif key == "ctrl_c":
                 if cancel_requires_double and not cancel_armed:
                     cancel_armed = True
                 else:
-                    _clear_rendered_menu(output_stream, printed_lines)
+                    _clear_rendered_menu(output_stream, printed_rows)
                     raise KeyboardInterrupt
             elif key == "escape":
-                _clear_rendered_menu(output_stream, printed_lines)
+                _clear_rendered_menu(output_stream, printed_rows)
                 raise KeyboardInterrupt
             elif _is_backspace_key(key):
                 query = query[:-1]
@@ -188,20 +185,13 @@ def _select_option_inline(
 ) -> str:
     input_fd = input_stream.fileno()
     old_settings = termios.tcgetattr(input_fd)
-    printed_lines = 0
+    printed_rows = 0
     cancel_armed = False
     while True:
         try:
             tty.setraw(input_fd)
             lines = _render_menu_lines(title, options, selected, use_color=True, cancel_armed=cancel_armed)
-            if printed_lines:
-                output_stream.write(f"\x1b[{printed_lines}F")
-            render_count = max(printed_lines, len(lines))
-            for index in range(render_count):
-                line = lines[index] if index < len(lines) else ""
-                output_stream.write("\r\x1b[2K" + line + "\n")
-            output_stream.flush()
-            printed_lines = render_count
+            printed_rows = _replace_rendered_menu(output_stream, printed_rows, lines)
 
             key = _read_key(input_fd)
             if key in {"up", "k", "K"}:
@@ -217,16 +207,19 @@ def _select_option_inline(
                 selected = len(options) - 1
                 cancel_armed = False
             elif key == "enter":
-                _clear_rendered_menu(output_stream, printed_lines)
+                _clear_rendered_menu(output_stream, printed_rows)
                 return options[selected].value
             elif key == "ctrl_c":
                 if cancel_requires_double and not cancel_armed:
                     cancel_armed = True
                 else:
-                    _clear_rendered_menu(output_stream, printed_lines)
+                    _clear_rendered_menu(output_stream, printed_rows)
                     raise KeyboardInterrupt
             elif key == "escape":
-                _clear_rendered_menu(output_stream, printed_lines)
+                _clear_rendered_menu(output_stream, printed_rows)
+                raise KeyboardInterrupt
+            elif key in OPTION_CANCEL_KEYS:
+                _clear_rendered_menu(output_stream, printed_rows)
                 raise KeyboardInterrupt
             else:
                 cancel_armed = False
@@ -247,6 +240,33 @@ def _clear_rendered_menu(output_stream: TextIO, line_count: int) -> None:
     else:
         output_stream.write("\r")
     output_stream.flush()
+
+
+def _replace_rendered_menu(output_stream: TextIO, previous_rows: int, lines: list[str]) -> int:
+    if previous_rows:
+        _clear_rendered_menu(output_stream, previous_rows)
+    rendered_rows = _write_rendered_menu(output_stream, lines)
+    output_stream.flush()
+    return rendered_rows
+
+
+def _write_rendered_menu(output_stream: TextIO, lines: list[str]) -> int:
+    width = _terminal_width()
+    rendered_rows = 0
+    for line in lines:
+        output_stream.write("\r\x1b[2K" + line + "\n")
+        rendered_rows += _rendered_row_count(line, width)
+    return rendered_rows
+
+
+def _rendered_row_count(line: str, width: int | None = None) -> int:
+    width = max(1, width or _terminal_width())
+    visible = ANSI_RE.sub("", line).expandtabs(8)
+    return max(1, (len(visible) + width - 1) // width)
+
+
+def _terminal_width() -> int:
+    return max(1, shutil.get_terminal_size(fallback=(80, 24)).columns)
 
 
 def _select_option_text(
@@ -276,6 +296,8 @@ def _select_option_text(
             raise
         if not choice:
             return options[default_index].value
+        if choice in OPTION_CANCEL_KEYS:
+            raise KeyboardInterrupt
         if choice.isdigit() and 1 <= int(choice) <= len(options):
             return options[int(choice) - 1].value
         for option in options:
@@ -296,7 +318,7 @@ def _read_text_menu_choice(input_stream: TextIO, output_stream: TextIO, prompt: 
 
 
 def _render_menu_lines(title: str, options: list[MenuOption], selected: int, *, use_color: bool, cancel_armed: bool = False) -> list[str]:
-    lines = [f"{title}  (Use Up/Down and Enter; Esc cancels)"]
+    lines = [f"{title}  (Use Up/Down and Enter; q/Esc cancels)"]
     for index, option in enumerate(options):
         prefix = ">" if index == selected else " "
         text = f"{prefix} {option.label}"

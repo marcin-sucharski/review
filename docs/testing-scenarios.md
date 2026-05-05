@@ -66,6 +66,8 @@ Fixture files should cover required languages:
 | Branch comparison target does not exist | Friendly error |
 | Git command fails | Friendly error without raw traceback |
 | User presses `Ctrl+C` in startup review-source prompt | Exits cleanly on first press |
+| User presses `q` in startup review-source prompt | Exits cleanly without collecting changes |
+| Inline menu labels wrap in a narrow terminal | Selection changes clear all wrapped rows and redraw in place |
 | Worktree symlink points outside the repository | Review shows the symlink target path, not linked file contents |
 | Worktree symlink is broken | Review still shows the stored symlink target |
 | Rename source is restored unchanged in worktree | Rename target is displayed as added; restored source is omitted |
@@ -300,6 +302,7 @@ Fixture files should cover required languages:
 | Archive directory contains invalid JSON | History commands skip invalid archive files |
 | `review ls` is run outside a Git repository | Recent archived reviews are listed without Git lookup |
 | `review display` is run outside a Git repository | User can select a saved review and it prints to stdout |
+| `review display` receives `q` at selection | Command exits as cancelled and prints no review body |
 | `review display` stdout is redirected | Selection menu is written away from stdout and redirected stdout contains only `review_message` |
 | `review display --file` is selected | Selected review is written to a timestamped local review file |
 

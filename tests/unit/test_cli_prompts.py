@@ -14,10 +14,12 @@ from review.tui.menu import (
     _clear_rendered_menu,
     _decode_key,
     _read_key,
+    _rendered_row_count,
     _render_branch_menu_lines,
     _render_menu_lines,
     _select_branch_inline,
     _select_option_inline,
+    _select_option_text,
 )
 
 
@@ -155,6 +157,7 @@ class CliPromptTests(unittest.TestCase):
 
         self.assertEqual(len(lines), 3)
         self.assertIn("Review source", lines[0])
+        self.assertIn("q/Esc cancels", lines[0])
         self.assertIn("> Review PR-style changes", lines[2])
         self.assertNotIn("\x1b[7m", "\n".join(lines))
 
@@ -206,6 +209,56 @@ class CliPromptTests(unittest.TestCase):
 
         self.assertEqual(output.getvalue(), "\x1b[3F\r\x1b[2K\x1b[1E\r\x1b[2K\x1b[1E\r\x1b[2K\x1b[2F")
 
+    def test_inline_menu_counts_wrapped_terminal_rows_without_counting_ansi_codes(self):
+        self.assertEqual(_rendered_row_count("\x1b[1;34m> abcdef\x1b[0m", 4), 2)
+        self.assertEqual(_rendered_row_count("", 4), 1)
+
+    def test_inline_option_menu_clears_wrapped_rows_when_selection_changes(self):
+        class FakeInput(io.StringIO):
+            def fileno(self):
+                return 42
+
+        output = io.StringIO()
+        options = [
+            MenuOption("review-20260504T120000Z very-long-branch-name /repo/with/a/very/long/path", "0"),
+            MenuOption("short", "1"),
+        ]
+        first_render_rows = sum(_rendered_row_count(line, 20) for line in _render_menu_lines("Saved reviews", options, 0, use_color=True))
+        with (
+            mock.patch("review.tui.menu.shutil.get_terminal_size", return_value=os.terminal_size((20, 24))),
+            mock.patch("review.tui.menu.termios.tcgetattr", return_value="settings"),
+            mock.patch("review.tui.menu.termios.tcsetattr"),
+            mock.patch("review.tui.menu.tty.setraw"),
+            mock.patch("review.tui.menu._read_key", side_effect=["down", "enter"]),
+        ):
+            choice = _select_option_inline("Saved reviews", options, 0, FakeInput(), output, False)
+
+        self.assertEqual(choice, "1")
+        self.assertIn(f"\x1b[{first_render_rows}F", output.getvalue())
+
+    def test_inline_branch_menu_clears_wrapped_rows_when_selection_changes(self):
+        class FakeInput(io.StringIO):
+            def fileno(self):
+                return 42
+
+        output = io.StringIO()
+        branches = ["feature/with-a-very-long-name", "main"]
+        first_render_rows = sum(
+            _rendered_row_count(line, 16)
+            for line in _render_branch_menu_lines("Target branch", "current/long-name", branches, 0, "", use_color=True)
+        )
+        with (
+            mock.patch("review.tui.menu.shutil.get_terminal_size", return_value=os.terminal_size((16, 24))),
+            mock.patch("review.tui.menu.termios.tcgetattr", return_value="settings"),
+            mock.patch("review.tui.menu.termios.tcsetattr"),
+            mock.patch("review.tui.menu.tty.setraw"),
+            mock.patch("review.tui.menu._read_key", side_effect=["down", "enter"]),
+        ):
+            choice = _select_branch_inline("Target branch", "current/long-name", branches, FakeInput(), output, False)
+
+        self.assertEqual(choice, "main")
+        self.assertIn(f"\x1b[{first_render_rows}F", output.getvalue())
+
     def test_inline_menu_clears_before_returning_selection(self):
         class FakeInput(io.StringIO):
             def fileno(self):
@@ -230,6 +283,41 @@ class CliPromptTests(unittest.TestCase):
         self.assertEqual(choice, "uncommitted")
         self.assertIn("\x1b[2K", output.getvalue())
         self.assertTrue(output.getvalue().endswith("\x1b[1F"))
+
+    def test_inline_option_menu_q_cancels_selection(self):
+        class FakeInput(io.StringIO):
+            def fileno(self):
+                return 42
+
+        output = io.StringIO()
+        with (
+            mock.patch("review.tui.menu.termios.tcgetattr", return_value="settings"),
+            mock.patch("review.tui.menu.termios.tcsetattr"),
+            mock.patch("review.tui.menu.tty.setraw"),
+            mock.patch("review.tui.menu._read_key", return_value="q"),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                _select_option_inline(
+                    "Review source",
+                    [MenuOption("Review uncommitted changes", "uncommitted")],
+                    0,
+                    FakeInput(),
+                    output,
+                    False,
+                )
+
+        self.assertIn("\x1b[2K", output.getvalue())
+
+    def test_text_option_menu_q_cancels_selection(self):
+        with self.assertRaises(KeyboardInterrupt):
+            _select_option_text(
+                "Saved reviews",
+                [MenuOption("recent review", "0")],
+                0,
+                False,
+                io.StringIO("q\n"),
+                io.StringIO(),
+            )
 
     def test_menu_decodes_arrow_escape_sequences_without_cancelling(self):
         self.assertEqual(_decode_key(b"\x1b[B"), "down")
@@ -569,6 +657,41 @@ class CliPromptTests(unittest.TestCase):
         self.assertIn("Saved reviews:", stderr.getvalue())
         self.assertIn("Select option [1]:", stderr.getvalue())
         self.assertNotIn("Saved reviews:", stdout.getvalue())
+
+    def test_review_display_q_cancels_without_printing_review_body(self):
+        reviews = [
+            cli.ArchivedReview(Path("/archive/new.json"), "/repo/new", "feature", "new review\n"),
+        ]
+        stdin = io.StringIO("q\n")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(cli, "list_archived_reviews", return_value=reviews),
+            mock.patch.object(cli.sys, "stdin", stdin),
+            mock.patch.object(cli.sys, "stdout", stdout),
+            mock.patch.object(cli.sys, "stderr", stderr),
+        ):
+            self.assertEqual(cli.main(["display"]), 130)
+
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("Saved reviews:", stderr.getvalue())
+        self.assertIn("review cancelled", stderr.getvalue())
+
+    def test_review_source_q_cancels_before_collecting_changes(self):
+        stdin = io.StringIO("q\n")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(cli, "repository_root", return_value=Path("/repo")),
+            mock.patch.object(cli, "collect_uncommitted", side_effect=AssertionError("source selection should cancel first")),
+            mock.patch.object(cli.sys, "stdin", stdin),
+            mock.patch.object(cli.sys, "stdout", stdout),
+            mock.patch.object(cli.sys, "stderr", stderr),
+        ):
+            self.assertEqual(cli.main(["--no-tui", "--stdout"]), 130)
+
+        self.assertIn("Review source:", stdout.getvalue())
+        self.assertIn("review cancelled", stderr.getvalue())
 
 
 if __name__ == "__main__":
