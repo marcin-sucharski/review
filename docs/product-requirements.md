@@ -161,6 +161,8 @@ In the review pane:
 - `Enter` on code opens a comment input,
 - `Enter` on expansion rows expands hidden context.
 
+The review pane supports Vim-style text search over visible review rows. Pressing `/` opens a status-line search prompt. Typing text and pressing `Enter` starts a literal search from the current cursor position, highlights matches, and focuses the first match at or after the cursor. Pressing `n` jumps to the next match, and `p` jumps to the previous match, wrapping through the review. Pressing `/` followed by `Enter` with an empty query clears the active search and match highlighting.
+
 `Shift+Up` and `Shift+Down` extend or shrink the current line selection in the review pane.
 
 While editing a comment message, `j` and `k` are inserted as text and do not navigate.

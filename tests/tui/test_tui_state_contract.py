@@ -6,7 +6,7 @@ from unittest import mock
 from review.diff_model import ReviewSource, create_review_file
 from review.review_state import ReviewState
 from review.tui import app as tui_app
-from review.tui.app import ReviewApp, _comment_title, _wrap_text, _wrap_text_segments
+from review.tui.app import ReviewApp, _comment_title, _literal_match_ranges, _syntax_segments, _wrap_text, _wrap_text_segments
 from review.tui.highlight import syntax_spans
 
 
@@ -76,6 +76,68 @@ class TuiStateContractTests(unittest.TestCase):
         app.command_buffer = "q"
         app._handle_command_key(10)
         self.assertTrue(app.quit_requested)
+
+    def test_slash_search_starts_from_current_selection(self):
+        file = create_review_file("notes.md", "added", [], ["alpha", "needle one", "middle", "needle two"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        app = ReviewApp(state)
+        app.content_height = 10
+        state.move_selection(2)
+
+        app._handle_key("/")
+        for key in "needle":
+            app._handle_key(key)
+        app._handle_key("\r")
+
+        self.assertEqual(app.search_query, "needle")
+        self.assertEqual(file.lines[state.active_row].text, "needle two")
+        self.assertIn("Match 2/2", app.status_message)
+
+    def test_search_next_previous_and_empty_search_clear(self):
+        file = create_review_file("notes.md", "added", [], ["needle one", "middle", "needle two"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        app = ReviewApp(state)
+        app.content_height = 10
+
+        app._handle_key("/")
+        for key in "needle":
+            app._handle_key(key)
+        app._handle_key("\r")
+        self.assertEqual(file.lines[state.active_row].text, "needle one")
+
+        app._handle_key("n")
+        self.assertEqual(file.lines[state.active_row].text, "needle two")
+
+        app._handle_key("p")
+        self.assertEqual(file.lines[state.active_row].text, "needle one")
+
+        app._handle_key("/")
+        app._handle_key("\r")
+        self.assertEqual(app.search_query, "")
+        self.assertEqual(app.status_message, "Search cleared.")
+
+    def test_search_escape_cancels_without_clearing_active_search(self):
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [create_review_file("notes.md", "added", [], ["needle"])])
+        app = ReviewApp(state)
+        app.search_query = "needle"
+
+        app._handle_key("/")
+        for key in "other":
+            app._handle_key(key)
+        app._handle_key("\x1b")
+
+        self.assertFalse(app.search_mode)
+        self.assertEqual(app.search_query, "needle")
+        self.assertEqual(app.status_message, tui_app.SEARCH_CANCELLED_MESSAGE)
+
+    def test_search_match_helpers_are_literal_and_split_syntax_for_highlight(self):
+        self.assertEqual(_literal_match_ranges("needle needle", "needle"), [(0, 6), (7, 13)])
+        segments = _syntax_segments("needle()", 0, [(0, 6, "function"), (6, 8, "punctuation")], [(0, 6)])
+
+        self.assertEqual(
+            segments,
+            [(0, 6, "function", True), (6, 8, "punctuation", False)],
+        )
 
     def test_file_pane_is_hidden_by_default(self):
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [])

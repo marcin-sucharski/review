@@ -225,6 +225,10 @@ Fixture files should cover required languages:
 | `Option+Left`/`Option+Right` in comment input | Cursor moves by word for supported terminal escape sequences |
 | `Ctrl+W` in comment input | Deletes the word before the cursor without removing text after the cursor |
 | `Alt`/`Meta` left/right in a real tmux TUI session | Cursor x-position moves by word and inserted text lands at the word-moved cursor |
+| `/needle` from current review row | First match at or after current cursor is selected and highlighted |
+| `n` after search | Next match is selected, wrapping at end |
+| `p` after search | Previous match is selected, wrapping at beginning |
+| `/` followed by empty `Enter` | Active search and highlight are cleared |
 | `Enter` in comment input | Saves comment |
 | Submit comment | Comment appears inline |
 | Press `:` | Command mode opens |

@@ -124,6 +124,10 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Comment input supports word movement through supported `Option+Left`/`Option+Right` terminal sequences.
 - [ ] Comment input supports `Ctrl+W` deleting the word before the cursor.
 - [ ] Word movement is verified in a real tmux TUI session with `M-Left`/`M-Right`, cursor movement, and submitted text insertion.
+- [ ] `/` opens review search from the current cursor position.
+- [ ] Search matches are highlighted in the review pane.
+- [ ] `n` and `p` navigate to next and previous search matches.
+- [ ] `/` followed by empty `Enter` clears the active search.
 - [ ] Saved comments render inline.
 - [ ] Selected or edited comments show focus without underline styling.
 - [ ] Comment range marker is visible between line numbers and change markers.

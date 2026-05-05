@@ -169,6 +169,9 @@ Global keys:
 | `Tab` | Switch focused pane |
 | `T` | Show or hide the file pane |
 | `:` | Open command mode |
+| `/` | Open search prompt from the current review cursor position |
+| `n` | Jump to the next active search match |
+| `p` | Jump to the previous active search match |
 | `Ctrl+C` | First press arms quit confirmation, second consecutive press quits |
 | `Esc` | Cancel current transient mode when applicable |
 
@@ -196,6 +199,20 @@ Review pane keys:
 | `Delete` / `Backspace` | Delete the selected saved comment |
 
 Arrow navigation should behave like an editor: the selected row moves within the viewport until it reaches the lower edge, then the viewport scrolls while keeping roughly three rows below the selected row. Page navigation moves by a viewport and preserves the selected row's screen offset when possible.
+
+Search prompt keys:
+
+| Key | Behavior |
+| --- | --- |
+| `/` | Opens the search prompt in the status line |
+| Typed text | Builds a literal search query |
+| `Enter` | Applies the search and jumps from the current cursor position to the first matching visible review row |
+| `Enter` with an empty query | Clears the active search and removes match highlighting |
+| `Esc` | Cancels editing the query and keeps the previous active search |
+| `n` | Jumps to the next match after the current cursor, wrapping at the end |
+| `p` | Jumps to the previous match before the current cursor, wrapping at the beginning |
+
+Search matches are highlighted in the review pane. The initial search starts from the currently selected review row rather than from the top of the review.
 
 Comment input keys:
 

@@ -17,6 +17,7 @@ GUTTER_WIDTH = 8
 INITIAL_STATUS_MESSAGE = "Tab switches panes. T toggles left pane. z centers code. :q quits."
 NO_SELECTED_COMMENT_MESSAGE = "No comment is attached to the selected line."
 INTERRUPT_CONFIRMATION_MESSAGE = "Press Ctrl+C again to quit review."
+SEARCH_CANCELLED_MESSAGE = "Search cancelled."
 MOUSE_SCROLL_LINES = 3
 SHIFT_UP_KEYS = {getattr(curses, "KEY_SR", -1000), getattr(curses, "KEY_SUP", -1001)}
 SHIFT_DOWN_KEYS = {getattr(curses, "KEY_SF", -1002), getattr(curses, "KEY_SDOWN", -1003)}
@@ -30,6 +31,7 @@ BACKGROUND_COLORS = {
     "deletion": (224, curses.COLOR_RED),
     "deletion-selection": (223, curses.COLOR_RED),
     "comment": (230, curses.COLOR_YELLOW),
+    "search": (226, curses.COLOR_YELLOW),
     "selection": (229, curses.COLOR_WHITE),
 }
 FOREGROUND_WITH_BACKGROUND = {
@@ -118,6 +120,9 @@ class ReviewApp:
         self.review_scroll = 0
         self.command_mode = False
         self.command_buffer = ""
+        self.search_mode = False
+        self.search_buffer = ""
+        self.search_query = ""
         self.comment_mode = False
         self.comment_buffer = ""
         self.comment_cursor_index = 0
@@ -543,6 +548,7 @@ class ReviewApp:
                 spans,
                 background,
                 modifiers,
+                self._item_search_ranges(item),
             )
         return max(1, len(chunks))
 
@@ -627,21 +633,19 @@ class ReviewApp:
         spans: list[tuple[int, int, str]],
         background: str | None,
         modifiers: int,
+        search_ranges: list[tuple[int, int]] | None = None,
     ) -> None:
-        cursor = 0
-        plain_attr = self._style("plain", background, modifiers)
-        for start, end, role in spans:
-            local_start = max(start, source_offset) - source_offset
-            local_end = min(end, source_offset + len(text)) - source_offset
-            if local_end <= 0 or local_start >= len(text) or local_start >= local_end:
-                continue
-            if local_start > cursor:
-                self._safe_addnstr(stdscr, y, x + cursor, text[cursor:local_start], width - cursor, plain_attr)
-            attr = self._style(role, background, modifiers)
+        for local_start, local_end, role, match in _syntax_segments(text, source_offset, spans, search_ranges or []):
+            attr = self._style(role, "search" if match else background, modifiers)
             self._safe_addnstr(stdscr, y, x + local_start, text[local_start:local_end], width - local_start, attr)
-            cursor = local_end
-        if cursor < len(text):
-            self._safe_addnstr(stdscr, y, x + cursor, text[cursor:], width - cursor, plain_attr)
+
+    def _item_search_ranges(self, item: DocumentItem) -> list[tuple[int, int]]:
+        if not self.search_query:
+            return []
+        text = _item_search_text(item)
+        if text is None:
+            return []
+        return _literal_match_ranges(text, self.search_query)
 
     def _draw_status(self, stdscr, height: int, width: int) -> None:
         y = height - 1
@@ -649,7 +653,13 @@ class ReviewApp:
         self._safe_addnstr(stdscr, y, 0, text.ljust(width), width - 1, attr)
 
     def _apply_cursor(self, stdscr, height: int, width: int) -> None:
-        if self.comment_mode and self.comment_cursor is not None:
+        if self.search_mode:
+            self._set_cursor_visibility(1)
+            try:
+                stdscr.move(height - 1, min(width - 1, 1 + len(self.search_buffer)))
+            except curses.error:
+                pass
+        elif self.comment_mode and self.comment_cursor is not None:
             self._set_cursor_visibility(1)
             y, x = self.comment_cursor
             try:
@@ -671,6 +681,8 @@ class ReviewApp:
             return INTERRUPT_CONFIRMATION_MESSAGE, curses.A_REVERSE
         if self.command_mode:
             return ":" + self.command_buffer, curses.A_REVERSE
+        if self.search_mode:
+            return "/" + self.search_buffer, curses.A_REVERSE
         if self.comment_mode:
             action = "Edit comment" if self.editing_comment_id else "New comment"
             return f"{action}: Enter saves, Ctrl+J inserts newline, Esc cancels", curses.A_REVERSE
@@ -686,6 +698,9 @@ class ReviewApp:
             return
         if self.command_mode:
             self._handle_command_key(key)
+            return
+        if self.search_mode:
+            self._handle_search_key(key)
             return
 
         if self._handle_global_key(key):
@@ -713,8 +728,17 @@ class ReviewApp:
         if key in (ord(":"), ":"):
             self._enter_command_mode()
             return True
+        if key in (ord("/"), "/"):
+            self._enter_search_mode()
+            return True
         if key in ("z", ord("z")):
             self._center_review_on_selection()
+            return True
+        if key in ("n", "N", ord("n"), ord("N")):
+            self._jump_to_search_match(1)
+            return True
+        if key in ("p", "P", ord("p"), ord("P")):
+            self._jump_to_search_match(-1)
             return True
         if _is_escape(key):
             if self.state.collapse_selection_to_active_row():
@@ -740,6 +764,10 @@ class ReviewApp:
     def _enter_command_mode(self) -> None:
         self.command_mode = True
         self.command_buffer = ""
+
+    def _enter_search_mode(self) -> None:
+        self.search_mode = True
+        self.search_buffer = ""
 
     def _handle_file_key(self, key: int | str) -> None:
         if _is_up_key(key):
@@ -826,6 +854,57 @@ class ReviewApp:
             handler()
         else:
             self.status_message = f"Unknown command: {command}"
+
+    def _handle_search_key(self, key: int | str) -> None:
+        if _is_escape(key):
+            self.search_mode = False
+            self.search_buffer = ""
+            self.status_message = SEARCH_CANCELLED_MESSAGE
+            return
+        if _is_backspace(key):
+            self.search_buffer = self.search_buffer[:-1]
+            return
+        if _is_enter(key):
+            self._submit_search()
+            return
+        text = _printable_key(key)
+        if text is not None:
+            self.search_buffer += text
+
+    def _submit_search(self) -> None:
+        query = self.search_buffer
+        self.search_mode = False
+        self.search_buffer = ""
+        if not query:
+            self.search_query = ""
+            self.status_message = "Search cleared."
+            return
+        self.search_query = query
+        self._jump_to_search_match(1, include_current=True)
+
+    def _jump_to_search_match(self, direction: int, *, include_current: bool = False) -> None:
+        if not self.search_query:
+            self.status_message = "No active search."
+            return
+        matches = self._search_match_indexes()
+        if not matches:
+            self.status_message = f"No matches for /{self.search_query}"
+            return
+        current = self.state.active_document_index()
+        if current is None:
+            current = self.review_scroll
+        target = _next_search_target(matches, current, direction, include_current)
+        self.state.select_document_index(target)
+        self.review_scroll = target
+        self._keep_selection_in_editor_view()
+        self.status_message = f"Match {matches.index(target) + 1}/{len(matches)} for /{self.search_query}"
+
+    def _search_match_indexes(self) -> list[int]:
+        return [
+            index
+            for index, item in enumerate(self.state.document_items())
+            if item.selectable and self._item_search_ranges(item)
+        ]
 
     def _handle_comment_key(self, key: int | str) -> None:
         key = _normalize_comment_key(key)
@@ -1349,6 +1428,87 @@ class ReviewApp:
             stdscr.addnstr(y, x, text, n, attr)
         except curses.error:
             pass
+
+
+def _item_search_text(item: DocumentItem) -> str | None:
+    if item.kind == "code" and item.line is not None:
+        return item.line.text
+    if item.kind == "comment" and item.comment is not None:
+        return item.comment.body
+    return None
+
+
+def _literal_match_ranges(text: str, query: str) -> list[tuple[int, int]]:
+    if not query:
+        return []
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    while True:
+        index = text.find(query, start)
+        if index < 0:
+            return ranges
+        end = index + len(query)
+        ranges.append((index, end))
+        start = max(index + 1, end)
+
+
+def _next_search_target(matches: list[int], current: int, direction: int, include_current: bool) -> int:
+    if direction >= 0:
+        current_match = next((index for index in matches if include_current and index >= current), None)
+        if current_match is not None:
+            return current_match
+        return next((index for index in matches if index > current), matches[0])
+    current_match = next((index for index in reversed(matches) if include_current and index <= current), None)
+    if current_match is not None:
+        return current_match
+    return next((index for index in reversed(matches) if index < current), matches[-1])
+
+
+def _syntax_segments(
+    text: str,
+    source_offset: int,
+    spans: list[tuple[int, int, str]],
+    search_ranges: list[tuple[int, int]],
+) -> list[tuple[int, int, str, bool]]:
+    if not text:
+        return []
+    chunk_start = source_offset
+    chunk_end = source_offset + len(text)
+    boundaries = {0, len(text)}
+    for start, end, _role in spans:
+        _add_local_boundaries(boundaries, start, end, chunk_start, chunk_end)
+    for start, end in search_ranges:
+        _add_local_boundaries(boundaries, start, end, chunk_start, chunk_end)
+    ordered = sorted(boundaries)
+    return [
+        (
+            local_start,
+            local_end,
+            _syntax_role_at(chunk_start + local_start, spans),
+            _range_overlaps_any(chunk_start + local_start, chunk_start + local_end, search_ranges),
+        )
+        for local_start, local_end in zip(ordered, ordered[1:])
+        if local_start < local_end
+    ]
+
+
+def _add_local_boundaries(boundaries: set[int], start: int, end: int, chunk_start: int, chunk_end: int) -> None:
+    local_start = max(start, chunk_start) - chunk_start
+    local_end = min(end, chunk_end) - chunk_start
+    if local_start < local_end:
+        boundaries.add(local_start)
+        boundaries.add(local_end)
+
+
+def _syntax_role_at(source_index: int, spans: list[tuple[int, int, str]]) -> str:
+    for start, end, role in spans:
+        if start <= source_index < end:
+            return role
+    return "plain"
+
+
+def _range_overlaps_any(start: int, end: int, ranges: list[tuple[int, int]]) -> bool:
+    return any(range_start < end and start < range_end for range_start, range_end in ranges)
 
 
 def _terminal_color(preferred_256: int, fallback: int) -> int:
