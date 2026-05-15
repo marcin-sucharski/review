@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import curses
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -133,6 +134,7 @@ class ReviewApp:
         self.file_pane_visible = False
         self.interrupt_armed = False
         self.mouse_drag_anchor: tuple[str, int] | None = None
+        self._pending_mouse_event: tuple[int, int, int] | None = None
         self.screen_map: dict[int, int] = {}
         self.comment_cursor: tuple[int, int] | None = None
         self.left_width = 32
@@ -167,18 +169,58 @@ class ReviewApp:
             curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
         except curses.error:
             pass
+        self._set_extended_mouse_coordinates(True)
         stdscr.keypad(True)
 
-        while not self.quit_requested:
-            self._draw(stdscr)
-            key = self._read_key(stdscr)
-            self._handle_key(key)
+        try:
+            while not self.quit_requested:
+                self._draw(stdscr)
+                key = self._read_key(stdscr)
+                self._handle_key(key)
+        finally:
+            self._set_extended_mouse_coordinates(False)
 
     def _read_key(self, stdscr) -> int | str:
         key = stdscr.get_wch()
         if self.comment_mode and _is_escape(key):
             return self._read_comment_escape_key(stdscr)
+        if _is_escape(key):
+            mouse_event = self._read_sgr_mouse_key(stdscr)
+            if mouse_event is not None:
+                self._pending_mouse_event = mouse_event
+                return curses.KEY_MOUSE
         return key
+
+    @staticmethod
+    def _set_extended_mouse_coordinates(enabled: bool) -> None:
+        code = "\x1b[?1006h" if enabled else "\x1b[?1006l"
+        try:
+            sys.stdout.write(code)
+            sys.stdout.flush()
+        except OSError:
+            pass
+
+    def _read_sgr_mouse_key(self, stdscr) -> tuple[int, int, int] | None:
+        sequence: list[int | str] = []
+        timeout_supported = hasattr(stdscr, "timeout")
+        try:
+            if timeout_supported:
+                stdscr.timeout(COMMENT_ESCAPE_TIMEOUT_MS)
+            else:
+                stdscr.nodelay(True)
+            for _ in range(32):
+                try:
+                    sequence.append(stdscr.get_wch())
+                except curses.error:
+                    break
+                if _sgr_mouse_sequence_complete(sequence):
+                    break
+        finally:
+            if timeout_supported:
+                stdscr.timeout(-1)
+            else:
+                stdscr.nodelay(False)
+        return _decode_sgr_mouse_sequence(sequence)
 
     def _read_comment_escape_key(self, stdscr) -> int | str:
         sequence: list[int | str] = []
@@ -188,7 +230,7 @@ class ReviewApp:
                 stdscr.timeout(COMMENT_ESCAPE_TIMEOUT_MS)
             else:
                 stdscr.nodelay(True)
-            for _ in range(8):
+            for _ in range(32):
                 try:
                     sequence.append(stdscr.get_wch())
                 except curses.error:
@@ -200,6 +242,10 @@ class ReviewApp:
                 stdscr.timeout(-1)
             else:
                 stdscr.nodelay(False)
+        mouse_event = _decode_sgr_mouse_sequence(sequence)
+        if mouse_event is not None:
+            self._pending_mouse_event = mouse_event
+            return curses.KEY_MOUSE
         decoded = _decode_comment_escape_sequence(sequence)
         return decoded if decoded is not None else "\x1b"
 
@@ -1208,8 +1254,11 @@ class ReviewApp:
             return
         self._handle_review_pane_mouse(y, button)
 
-    @staticmethod
-    def _read_mouse() -> tuple[int, int, int] | None:
+    def _read_mouse(self) -> tuple[int, int, int] | None:
+        if self._pending_mouse_event is not None:
+            event = self._pending_mouse_event
+            self._pending_mouse_event = None
+            return event
         try:
             _, x, y, _, button = curses.getmouse()
         except curses.error:
@@ -1581,6 +1630,40 @@ def _scroll_footer_text(above: int, below: int) -> str:
 
 def _mouse_mask(name: str) -> int:
     return getattr(curses, name, 0)
+
+
+def _sgr_mouse_sequence_complete(sequence: list[int | str]) -> bool:
+    text = _key_sequence_text(sequence)
+    return text.startswith("[<") and text.endswith(("M", "m"))
+
+
+def _decode_sgr_mouse_sequence(sequence: list[int | str]) -> tuple[int, int, int] | None:
+    text = _key_sequence_text(sequence)
+    if not _sgr_mouse_sequence_complete(sequence):
+        return None
+    try:
+        button_text, x_text, y_text = text[2:-1].split(";")
+        button_code = int(button_text)
+        x = max(0, int(x_text) - 1)
+        y = max(0, int(y_text) - 1)
+    except ValueError:
+        return None
+    button = _sgr_mouse_button(button_code, text[-1])
+    if button == 0:
+        return None
+    return x, y, button
+
+
+def _sgr_mouse_button(button_code: int, final: str) -> int:
+    if button_code & 64:
+        return _mouse_mask("BUTTON5_PRESSED") if button_code & 1 else _mouse_mask("BUTTON4_PRESSED")
+    if final == "m":
+        return _mouse_mask("BUTTON1_RELEASED")
+    if button_code & 32:
+        return _mouse_mask("REPORT_MOUSE_POSITION")
+    if button_code & 3 == 0:
+        return _mouse_mask("BUTTON1_PRESSED")
+    return 0
 
 
 def _mouse_primary_down(button: int) -> bool:

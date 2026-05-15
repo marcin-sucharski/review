@@ -107,6 +107,7 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Mouse click focuses panes.
 - [ ] Mouse click selects files and lines.
 - [ ] Mouse wheel scrolling works where supported.
+- [ ] Mouse wheel scrolling works from far-right columns in wide review panes.
 - [ ] First `Ctrl+C` in the TUI shows confirmation instead of quitting.
 - [ ] Second consecutive `Ctrl+C` in the TUI quits.
 

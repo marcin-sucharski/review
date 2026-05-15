@@ -6,7 +6,15 @@ from unittest import mock
 from review.diff_model import ReviewSource, create_review_file
 from review.review_state import ReviewState
 from review.tui import app as tui_app
-from review.tui.app import ReviewApp, _comment_title, _literal_match_ranges, _syntax_segments, _wrap_text, _wrap_text_segments
+from review.tui.app import (
+    ReviewApp,
+    _comment_title,
+    _decode_sgr_mouse_sequence,
+    _literal_match_ranges,
+    _syntax_segments,
+    _wrap_text,
+    _wrap_text_segments,
+)
 from review.tui.highlight import syntax_spans
 
 
@@ -69,6 +77,45 @@ class TuiStateContractTests(unittest.TestCase):
         self.assertIsNone(state.active_document_index())
         app._ensure_selected_visible()
         self.assertEqual(app.review_scroll, binary_header_index)
+
+    def test_sgr_mouse_wheel_decodes_large_columns(self):
+        event = _decode_sgr_mouse_sequence(list("[<65;260;7M"))
+
+        self.assertEqual(event, (259, 6, tui_app.curses.BUTTON5_PRESSED))
+
+    def test_pending_mouse_wheel_scrolls_from_far_right_review_pane(self):
+        file = create_review_file("src/app.py", "added", [], [f"line {index}" for index in range(80)])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        app = ReviewApp(state)
+        app.content_height = 20
+        app.left_width = 32
+        app.file_pane_visible = True
+        app._pending_mouse_event = (260, 8, tui_app.curses.BUTTON5_PRESSED)
+
+        app._handle_mouse()
+
+        self.assertEqual(app.review_scroll, tui_app.MOUSE_SCROLL_LINES)
+
+    def test_comment_escape_reader_preserves_raw_sgr_mouse_event(self):
+        class FakeScreen:
+            def __init__(self):
+                self.keys = iter("[<65;260;7M")
+
+            def timeout(self, _value):
+                return None
+
+            def get_wch(self):
+                try:
+                    return next(self.keys)
+                except StopIteration as exc:
+                    raise curses.error from exc
+
+        app = ReviewApp(ReviewState(Path("/repo"), ReviewSource("uncommitted"), []))
+
+        key = app._read_comment_escape_key(FakeScreen())
+
+        self.assertEqual(key, tui_app.curses.KEY_MOUSE)
+        self.assertEqual(app._pending_mouse_event, (259, 6, tui_app.curses.BUTTON5_PRESSED))
 
     def test_empty_quit_exits_without_confirmation(self):
         state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [])

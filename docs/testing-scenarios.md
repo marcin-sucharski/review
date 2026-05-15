@@ -251,6 +251,7 @@ Fixture files should cover required languages:
 | Click code line | Line selected |
 | Click expansion row | Row selected or expanded according to UX |
 | Mouse wheel review pane | Scrolls review pane |
+| Mouse wheel at far-right column in wide review pane | Scrolls review pane using extended mouse coordinates |
 | Mouse wheel changes visible file | File pane highlight updates |
 | Click wrapped continuation | Original logical line selected |
 

@@ -247,6 +247,8 @@ Mouse behavior:
 - clicking an expansion row activates or selects it,
 - wheel scrolling in the review pane updates the highlighted file in the file pane.
 
+Mouse wheel events should work across the full review pane width, including very wide terminals. The TUI enables extended SGR mouse coordinates so columns beyond the legacy mouse-coordinate range are still decoded.
+
 Mouse support should be tested where the TUI framework supports synthetic mouse events.
 
 ## Selection Model
