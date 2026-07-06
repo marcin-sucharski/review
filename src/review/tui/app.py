@@ -8,6 +8,7 @@ from typing import Literal
 
 from ..diff_model import ReviewComment, ReviewLine
 from ..review_state import DocumentItem, ReviewState
+from ..clipboard import copy_text_to_clipboard
 from .file_tree import FileTreeRow, build_file_tree, file_tree_row_index
 from .highlight import syntax_spans
 
@@ -83,12 +84,15 @@ FOREGROUND_DEFAULT = {
 class DrawFrame:
     active_index: int | None
     selected_file_path: str | None
-    selected_rows: frozenset[int]
+    selected_row_range: tuple[int, int] | None
     comment_input_row: int | None
     comment_ranges: dict[str, tuple[tuple[int, int], ...]]
 
     def is_selected_row(self, file_path: str, row_index: int | None) -> bool:
-        return row_index is not None and file_path == self.selected_file_path and row_index in self.selected_rows
+        if row_index is None or file_path != self.selected_file_path or self.selected_row_range is None:
+            return False
+        start, end = self.selected_row_range
+        return start <= row_index <= end
 
     def has_comment_range(self, file_path: str, row_index: int | None) -> bool:
         if row_index is None:
@@ -169,7 +173,7 @@ class ReviewApp:
             curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
         except curses.error:
             pass
-        self._set_extended_mouse_coordinates(True)
+        self._set_terminal_mouse_reporting(True)
         stdscr.keypad(True)
 
         try:
@@ -178,7 +182,7 @@ class ReviewApp:
                 key = self._read_key(stdscr)
                 self._handle_key(key)
         finally:
-            self._set_extended_mouse_coordinates(False)
+            self._set_terminal_mouse_reporting(False)
 
     def _read_key(self, stdscr) -> int | str:
         key = stdscr.get_wch()
@@ -192,8 +196,8 @@ class ReviewApp:
         return key
 
     @staticmethod
-    def _set_extended_mouse_coordinates(enabled: bool) -> None:
-        code = "\x1b[?1006h" if enabled else "\x1b[?1006l"
+    def _set_terminal_mouse_reporting(enabled: bool) -> None:
+        code = "\x1b[?1002h\x1b[?1006h" if enabled else "\x1b[?1002l\x1b[?1006l"
         try:
             sys.stdout.write(code)
             sys.stdout.flush()
@@ -474,16 +478,16 @@ class ReviewApp:
 
     def _draw_frame(self, active_index: int | None = None) -> DrawFrame:
         selected_file_path = None
-        selected_rows: frozenset[int] = frozenset()
-        selected = self.state.selected_visible_rows()
+        selected_row_range: tuple[int, int] | None = None
+        selected = self.state.selected_visible_row_range()
         if selected is not None:
-            selected_file_path, rows = selected
-            selected_rows = frozenset(rows)
-        comment_input_row = max(selected_rows) if selected_rows else None
+            selected_file_path, start, end = selected
+            selected_row_range = (start, end)
+        comment_input_row = selected_row_range[1] if selected_row_range is not None else None
         return DrawFrame(
             active_index=self.state.active_document_index() if active_index is None else active_index,
             selected_file_path=selected_file_path,
-            selected_rows=selected_rows,
+            selected_row_range=selected_row_range,
             comment_input_row=comment_input_row,
             comment_ranges=self._comment_ranges_by_file(),
         )
@@ -802,6 +806,9 @@ class ReviewApp:
         if key in ("p", "P", ord("p"), ord("P")):
             self._jump_to_search_match(-1)
             return True
+        if key in ("y", "Y", ord("y"), ord("Y")):
+            self._copy_selected_text()
+            return True
         if _is_escape(key):
             if self.state.collapse_selection_to_active_row():
                 self.status_message = "Selection cleared."
@@ -1101,6 +1108,7 @@ class ReviewApp:
             (("e", "edit", "edit-comment"), self._command_edit_comment),
             (("d", "delete", "delete-comment"), self._command_delete_comment),
             (("c", "center", "centre"), self._command_center),
+            (("y", "yank", "copy", "copy-selection"), self._command_copy_selection),
         ):
             for alias in aliases:
                 handlers[alias] = handler
@@ -1114,6 +1122,9 @@ class ReviewApp:
 
     def _command_center(self) -> None:
         self._center_review_on_selection()
+
+    def _command_copy_selection(self) -> None:
+        self._copy_selected_text()
 
     def _command_edit_comment(self) -> None:
         self._start_edit_selected_comment()
@@ -1339,9 +1350,11 @@ class ReviewApp:
         if _mouse_primary_down(button):
             self.state.select_document_index(document_index)
             self.mouse_drag_anchor = (item.file_path, item.row_index)
+            self._update_selection_status()
         elif _mouse_drag_or_release(button):
             if self.mouse_drag_anchor and self.mouse_drag_anchor[0] == item.file_path:
                 self.state.select_range(self.mouse_drag_anchor[0], self.mouse_drag_anchor[1], item.row_index)
+                self._update_selection_status()
             if button & _mouse_mask("BUTTON1_RELEASED"):
                 self._clear_mouse_drag()
         else:
@@ -1354,6 +1367,38 @@ class ReviewApp:
 
     def _clear_mouse_drag(self) -> None:
         self.mouse_drag_anchor = None
+
+    def _copy_selected_text(self) -> None:
+        selected = self._selected_clipboard_text()
+        if selected is None:
+            self.status_message = "No code selection to copy."
+            return
+        text, line_count = selected
+        if copy_text_to_clipboard(text):
+            suffix = "line" if line_count == 1 else "lines"
+            self.status_message = f"Copied {line_count} selected {suffix} to clipboard."
+        else:
+            self.status_message = "Could not copy selection to clipboard."
+
+    def _selected_clipboard_text(self) -> tuple[str, int] | None:
+        selected = self.state.selected_visible_row_range()
+        if selected is None:
+            return None
+        file_path, start, end = selected
+        file = self.state.file_by_path(file_path)
+        lines = [file.lines[index].text for index in range(start, end + 1)]
+        if not lines:
+            return None
+        return "\n".join(lines), len(lines)
+
+    def _update_selection_status(self) -> None:
+        selected = self.state.selected_visible_row_range()
+        if selected is None:
+            return
+        _, start, end = selected
+        line_count = end - start + 1
+        suffix = "line" if line_count == 1 else "lines"
+        self.status_message = f"Selected {line_count} {suffix}. Press y to copy or Enter to comment."
 
     def _ensure_selected_visible(self, items: list[DocumentItem] | None = None, active: int | None = None) -> None:
         if active is None:

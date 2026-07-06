@@ -404,17 +404,15 @@ class ReviewState:
             return self.move_selection(delta)
         file = self.file_by_path(self.selected_file_path)
         anchor = self.anchor_row if self.anchor_row is not None else self.active_row
-        visible_code_rows = self._visible_selectable_rows_in_anchor_interval(file, anchor)
-        if not visible_code_rows:
+        selectable_bounds = self._visible_selectable_bounds_in_anchor_interval(file, anchor)
+        if selectable_bounds is None:
             return self.selected_document_index()
-        try:
-            position = visible_code_rows.index(self.active_row)
-        except ValueError:
-            position = 0
-        position = max(0, min(len(visible_code_rows) - 1, position + delta))
+        start, end = selectable_bounds
+        position = self.active_row if start <= self.active_row <= end else anchor
+        position = max(start, min(end, position + delta))
         if self.anchor_row is None:
             self.anchor_row = self.active_row
-        self.active_row = visible_code_rows[position]
+        self.active_row = position
         self.selected_row = self.active_row
         return self.selected_document_index()
 
@@ -437,25 +435,31 @@ class ReviewState:
         return True
 
     def is_row_in_selection(self, file_path: str, row_index: int) -> bool:
-        if file_path != self.selected_file_path:
-            return False
-        selected = self.selected_visible_rows()
+        selected = self.selected_visible_row_range()
         if selected is None:
             return False
-        _, rows = selected
-        return row_index in rows
+        selected_file_path, start, end = selected
+        return file_path == selected_file_path and start <= row_index <= end
 
-    def selected_visible_rows(self) -> tuple[str, tuple[int, ...]] | None:
+    def selected_visible_row_range(self) -> tuple[str, int, int] | None:
         if self.selected_file_path is None:
             return None
         selected = self.selected_range()
         if selected is None:
             return None
         file = self.file_by_path(self.selected_file_path)
-        rows = self._contiguous_visible_selection_rows(file, selected[0], selected[1])
-        if not rows:
+        visible_range = self._contiguous_visible_selection_range(file, selected[0], selected[1])
+        if visible_range is None:
             return None
-        return self.selected_file_path, tuple(rows)
+        start, end = visible_range
+        return self.selected_file_path, start, end
+
+    def selected_visible_rows(self) -> tuple[str, tuple[int, ...]] | None:
+        selected = self.selected_visible_row_range()
+        if selected is None:
+            return None
+        file_path, start, end = selected
+        return file_path, tuple(range(start, end + 1))
 
     def add_comment(self, body: str) -> ReviewComment | None:
         if self.selected_file_path is None:
@@ -465,10 +469,11 @@ class ReviewState:
             return None
         file = self.file_by_path(self.selected_file_path)
         start, end = selected
-        selected_rows = self._contiguous_visible_selection_rows(file, start, end)
-        selected_lines = tuple(file.lines[index] for index in selected_rows)
-        if not selected_lines:
+        selected_range = self._contiguous_visible_selection_range(file, start, end)
+        if selected_range is None:
             return None
+        visible_start, visible_end = selected_range
+        selected_lines = tuple(file.lines[index] for index in range(visible_start, visible_end + 1))
         self._comment_counter += 1
         comment = ReviewComment(
             id=f"c{self._comment_counter}",
@@ -536,37 +541,48 @@ class ReviewState:
     def select_range(self, file_path: str, anchor_row: int, active_row: int) -> int:
         file = self.file_by_path(file_path)
         start, end = min(anchor_row, active_row), max(anchor_row, active_row)
-        if not self._contiguous_visible_selection_rows(file, start, end):
+        if self._contiguous_visible_selection_range(file, start, end) is None:
             return self.selected_document_index()
         self._select_code(self.file_index(file.path), file.path, active_row, anchor_row=anchor_row)
         return self.selected_document_index()
 
     @staticmethod
-    def _visible_selectable_rows_in_anchor_interval(file: ReviewFile, anchor_row: int | None) -> list[int]:
+    def _visible_selectable_bounds_in_anchor_interval(file: ReviewFile, anchor_row: int | None) -> tuple[int, int] | None:
         if anchor_row is None:
-            return []
+            return None
         for interval in file.visible_intervals:
             if interval.start <= anchor_row <= interval.end:
                 if not file.lines[anchor_row].selectable:
-                    return []
-                start = anchor_row
-                while start > interval.start and file.lines[start - 1].selectable:
-                    start -= 1
-                end = anchor_row
-                while end < interval.end and file.lines[end + 1].selectable:
-                    end += 1
-                return list(range(start, end + 1))
-        return []
+                    return None
+                previous_blocker = max(
+                    (row for row in file.non_selectable_rows if interval.start <= row < anchor_row),
+                    default=interval.start - 1,
+                )
+                next_blocker = min(
+                    (row for row in file.non_selectable_rows if anchor_row < row <= interval.end),
+                    default=interval.end + 1,
+                )
+                start = previous_blocker + 1
+                end = next_blocker - 1
+                return start, end
+        return None
+
+    @staticmethod
+    def _contiguous_visible_selection_range(file: ReviewFile, start: int, end: int) -> tuple[int, int] | None:
+        for interval in file.visible_intervals:
+            if interval.start <= start <= end <= interval.end:
+                if not any(start <= row <= end for row in file.non_selectable_rows):
+                    return start, end
+                return None
+        return None
 
     @staticmethod
     def _contiguous_visible_selection_rows(file: ReviewFile, start: int, end: int) -> list[int]:
-        for interval in file.visible_intervals:
-            if interval.start <= start <= end <= interval.end:
-                rows = list(range(start, end + 1))
-                if all(file.lines[row].selectable for row in rows):
-                    return rows
-                return []
-        return []
+        selected_range = ReviewState._contiguous_visible_selection_range(file, start, end)
+        if selected_range is None:
+            return []
+        visible_start, visible_end = selected_range
+        return list(range(visible_start, visible_end + 1))
 
     def expand_context(self, expansion_id: str) -> int:
         for item_index, item in enumerate(self.document_items()):

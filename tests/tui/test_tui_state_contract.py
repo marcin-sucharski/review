@@ -1,5 +1,6 @@
 import unittest
 import curses
+import io
 from pathlib import Path
 from unittest import mock
 
@@ -19,7 +20,7 @@ from review.tui.highlight import syntax_spans
 
 
 def _empty_draw_frame():
-    return tui_app.DrawFrame(None, None, frozenset(), None, {})
+    return tui_app.DrawFrame(None, None, None, None, {})
 
 
 class TuiStateContractTests(unittest.TestCase):
@@ -82,6 +83,15 @@ class TuiStateContractTests(unittest.TestCase):
         event = _decode_sgr_mouse_sequence(list("[<65;260;7M"))
 
         self.assertEqual(event, (259, 6, tui_app.curses.BUTTON5_PRESSED))
+
+    def test_terminal_mouse_reporting_enables_drag_motion_and_sgr_coordinates(self):
+        stream = io.StringIO()
+
+        with mock.patch.object(tui_app.sys, "stdout", stream):
+            ReviewApp._set_terminal_mouse_reporting(True)
+            ReviewApp._set_terminal_mouse_reporting(False)
+
+        self.assertEqual(stream.getvalue(), "\x1b[?1002h\x1b[?1006h\x1b[?1002l\x1b[?1006l")
 
     def test_pending_mouse_wheel_scrolls_from_far_right_review_pane(self):
         file = create_review_file("src/app.py", "added", [], [f"line {index}" for index in range(80)])
@@ -607,6 +617,43 @@ class TuiStateContractTests(unittest.TestCase):
         with mock.patch.object(tui_app.curses, "getmouse", return_value=(0, 25, 2, 0, move_button)):
             app._handle_mouse()
         self.assertEqual(state.selected_range(), (0, 3))
+        self.assertIn("Selected 4 lines", app.status_message)
+
+    def test_y_copies_selected_code_text_to_clipboard(self):
+        file = create_review_file("src/app.js", "added", [], ["alpha", "beta", "gamma"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        state.extend_selection(1)
+        app = ReviewApp(state)
+
+        with mock.patch.object(tui_app, "copy_text_to_clipboard", return_value=True) as copy_text:
+            app._handle_key("y")
+
+        copy_text.assert_called_once_with("alpha\nbeta")
+        self.assertEqual(app.status_message, "Copied 2 selected lines to clipboard.")
+
+    def test_copy_selection_command_reports_clipboard_failure(self):
+        file = create_review_file("src/app.js", "added", [], ["alpha"])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        app = ReviewApp(state)
+
+        with mock.patch.object(tui_app, "copy_text_to_clipboard", return_value=False):
+            app.command_buffer = "copy"
+            app._handle_command_key(10)
+
+        self.assertEqual(app.status_message, "Could not copy selection to clipboard.")
+
+    def test_draw_frame_uses_selected_range_without_enumerating_selected_rows(self):
+        file = create_review_file("src/app.js", "added", [], [f"line {index}" for index in range(10)])
+        state = ReviewState(Path("/repo"), ReviewSource("uncommitted"), [file])
+        state.select_range("src/app.js", 0, 9)
+        app = ReviewApp(state)
+
+        with mock.patch.object(state, "selected_visible_rows", side_effect=AssertionError("rows should not be enumerated")):
+            frame = app._draw_frame()
+
+        self.assertEqual(frame.selected_row_range, (0, 9))
+        self.assertTrue(frame.is_selected_row("src/app.js", 5))
+        self.assertFalse(frame.is_selected_row("src/app.js", 10))
 
     def test_escape_cancels_multiline_selection(self):
         file = create_review_file("src/app.js", "modified", ["a", "b"], ["A", "B"])

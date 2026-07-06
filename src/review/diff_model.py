@@ -74,12 +74,14 @@ class ReviewFile:
     binary: bool = False
     metadata: list[str] = field(default_factory=list)
     visible_intervals: list[VisibleInterval] = field(default_factory=list)
+    non_selectable_rows: frozenset[int] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.language == "text":
             self.language = language_for_path(self.path)
         if not self.visible_intervals:
             self.visible_intervals = initial_visible_intervals(self.lines)
+        self.non_selectable_rows = frozenset(index for index, line in enumerate(self.lines) if not line.selectable)
 
     @property
     def display_path(self) -> str:
