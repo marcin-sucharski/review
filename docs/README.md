@@ -1,6 +1,6 @@
 # Review CLI Documentation
 
-`review` is a Python terminal review tool for inspecting Git changes, writing line-level review comments, and sending the collected feedback to a coding agent through tmux or standard output.
+`review` is a native Rust terminal review tool for inspecting Git changes, writing line-level review comments, and sending the collected feedback to a coding agent through tmux or standard output.
 
 This directory is the implementation contract for the project. It intentionally comes before the code so the behavior, interfaces, testing obligations, and edge cases are explicit.
 
@@ -55,7 +55,7 @@ The tool must be thoroughly tested with unit tests, integration tests using temp
 ## Documentation Map
 
 - [Product Requirements](./product-requirements.md): user-facing behavior and acceptance criteria.
-- [Architecture](./architecture.md): proposed Python modules, data flow, and boundaries.
+- [Architecture](./architecture.md): implemented Rust modules, data flow, and boundaries.
 - [TUI Behavior](./tui-behavior.md): layout, navigation, selection, comments, and rendering rules.
 - [Git Diff Model](./git-diff-model.md): how changes should be collected and represented.
 - [Comment Output Format](./comment-output-format.md): feedback message format for tmux and stdout.

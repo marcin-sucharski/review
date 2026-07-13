@@ -1,312 +1,128 @@
 # Architecture
 
-## Design Principles
+## Design principles
 
-The implementation should keep terminal UI code separate from Git parsing, review state, output formatting, and tmux integration.
+The executable is organized around a small, testable domain core. Git collection, review state, formatting, persistence, and tmux delivery do not depend on terminal rendering. The TUI translates terminal events into explicit state mutations and renders a continuous review document.
 
-The most important rule is that behavior must be testable without launching a full terminal UI. The TUI should render and mutate a plain in-memory review model rather than owning the business logic.
+The implementation is safe Rust (`unsafe_code = "forbid"`) and has no runtime language environment. External processes are limited to `git` for repository data and `tmux` for optional pane discovery and delivery.
 
-## Package Layout
-
-The implemented package layout is:
+## Package layout
 
 ```text
 src/
-  review/
-    __init__.py
-    __main__.py
-    cli.py
-    errors.py
-    git.py
-    languages.py
-    diff_model.py
-    review_state.py
-    format_review.py
-    archive.py
-    tmux.py
-    tui/
-      __init__.py
-      app.py
-      file_tree.py
-      highlight.py
-      menu.py
+  main.rs        process entry point
+  lib.rs         public modules and version
+  cli.rs         argument parsing and workflow orchestration
+  error.rs       typed, user-facing failures
+  git.rs         repository inspection and final-worktree collection
+  model.rs       immutable file/line/comment domain records and diffing
+  state.rs       mutable review session state
+  tui.rs         alternate-screen renderer and event handling
+  menu.rs        compact source, branch, delivery, and history menus
+  syntax.rs      language detection and syntax highlighting
+  file_tree.rs   collapsed modified-file tree
+  format.rs      Markdown and XML feedback serialization
+  archive.rs     atomic XDG archive and local-file delivery
+  tmux.rs        pane discovery and buffered delivery
 tests/
-  unit/
-  integration/
-  tui/
+  rust_git_integration.rs
+  rust_cli_integration.rs
 docs/
 ```
 
-## Module Responsibilities
+## Module boundaries
 
-`cli.py` owns command startup, high-level prompts, error handling, and final process exit behavior.
+`cli` owns startup, history commands, source selection, workflow sequencing, and friendly process exit behavior. Its argument parser is intentionally small because the public command surface has only a few options.
 
-`git.py` owns Git command execution and turns repository state into raw diff data.
+`git` executes Git with argument arrays, validates exit status, and turns repository state into `ReviewFile` records. It never parses human-formatted Git output. Path lists use NUL-delimited formats so whitespace and non-ASCII names remain safe.
 
-`errors.py` defines typed user-facing exceptions.
+`model` defines sources, statuses, files, lines, expansion ranges, and comments. It builds a patience diff from old and new file contents and preserves both old-side and new-side line numbers.
 
-`languages.py` maps file names and extensions to syntax/output languages.
+`state` owns selection, visible context, saved comments, editing and deletion, and the ordered document items consumed by the renderer. These transitions are unit-testable without a terminal.
 
-`diff_model.py` owns parsing raw diff data into structured files, hunks, line records, and expansion ranges.
+`tui` uses crossterm directly. It owns the alternate screen, raw mode, terminal cleanup guard, keyboard and mouse decoding, layout, wrapping, sticky headers, search, command mode, and the inline comment editor. Syntax is highlighted lazily for visible rows and cached by file and line.
 
-`review_state.py` owns the mutable review session state: focused pane, selected file, selected line range, expanded context, and saved comments.
+`menu` renders small inline menus without entering the full-screen TUI. Prompts are written to stderr so redirected review output remains clean.
 
-`format_review.py` turns saved comments and referenced context into the final feedback message. Markdown is the default output format, and XML is available through the CLI output-format option.
+`syntax` maps paths to output fence languages and selects an explicitly enabled tree-sitter grammar from Arborium. It covers all representative formats in the acceptance matrix, plus native Rust and Cargo TOML files, and falls back safely to plain text.
 
-`archive.py` persists completed non-empty reviews as JSON under the XDG local data directory and exposes read APIs for recent-review history commands.
+`format` is the single serializer for review feedback. It dynamically chooses safe Markdown fences, distinguishes old-side deleted-line references, escapes XML text, and splits embedded CDATA terminators.
 
-`tmux.py` discovers panes and sends text to a selected pane.
+`archive` writes completed reviews atomically beneath the XDG data directory and reads valid recent records defensively. It also creates timestamped Markdown delivery files.
 
-`tui/app.py` owns curses application composition, rendering, global key bindings, review-pane navigation, command mode, comment editing, and mouse handling. The current implementation keeps these TUI behaviors together while preserving pure review state and formatting outside curses.
+`tmux` discovers panes from machine-readable fields. Delivery loads the full review into a named tmux buffer, pastes it literally, and then sends Enter, avoiding shell interpolation and command-length limits.
 
-`tui/file_tree.py` builds the collapsed modified-file tree used by the file pane.
+## Data flow
 
-`tui/highlight.py` wraps Pygments syntax highlighting and maps tokens to renderer roles.
+1. The CLI finds the repository root and resolves the requested review source.
+2. The Git adapter reads the comparison base and final working-tree files.
+3. The model constructs ordered line records and initial context windows.
+4. Review state exposes one continuous document of headers, code, expansion rows, and inline comments.
+5. The TUI renders the current viewport and applies navigation, selection, comment, search, and mouse events to state.
+6. On `:q`, the formatter produces Markdown or XML from saved comments.
+7. A non-empty review is archived before delivery.
+8. The CLI writes stdout, creates a Markdown file, or sends the selected output to tmux.
 
-`tui/menu.py` owns compact inline terminal menus for startup, branch, and delivery selection.
+## Git comparison model
 
-## Core Data Flow
+Uncommitted review compares `HEAD` with the final working tree. Staged and unstaged changes are therefore unified, and untracked files are added explicitly.
 
-1. CLI validates repository state.
-2. User selects review source.
-3. Git adapter collects diff information.
-4. Diff parser builds immutable file and line records.
-5. Review state creates an initially visible review document with broad context.
-6. TUI renders the left navigation pane and review pane from review state.
-7. User navigates, expands context, and adds comments.
-8. Quit command exits TUI and returns saved comments.
-9. Formatter creates final review message.
-10. If the review has comments, CLI writes a JSON archive.
-11. CLI asks for delivery target.
-12. Delivery writes Markdown to a timestamped local file, writes to stdout, or sends to a tmux pane.
+Branch review finds `merge-base(target, HEAD)` and compares that base with the final working tree. The result contains committed branch work plus current staged, unstaged, and untracked changes exactly once.
 
-## Core Domain Objects
+For each path, collection reads the old blob from the base commit and the new bytes from the worktree. Deleted files have no new bytes. Symlinks are read as link targets without dereferencing. Binary or control-heavy files receive metadata records instead of terminal byte output. Rename/copy status and executable-mode changes are preserved.
 
-### ReviewSession
+## Domain records
 
-Represents one review.
+`ReviewSource` identifies uncommitted or branch comparison, including the selected target and merge base.
 
-Fields:
+`ReviewFile` contains current and previous paths, status, language, optional mode information, line records, binary metadata, and mutable visible context intervals.
 
-- `source`: selected review source.
-- `repository_root`: absolute path to the Git repository.
-- `files`: ordered list of reviewed files.
-- `comments`: list of saved comments.
-- `selection`: current file and line/range selection.
-- `expanded_ranges`: visible context expansions per file.
+`ReviewLine` contains its diff kind, text, stable row identity, and optional old/new line numbers. A selected range cannot cross a file boundary.
 
-### ReviewFile
+`ReviewComment` contains a stable in-session ID, file, old/new line reference, selected source lines, and body. Deleted-line comments use old-side references in both output formats.
 
-Represents one changed file.
+`ReviewState` contains repository/source metadata, ordered files, current focus and selection, expansion state, and comments. TUI-only viewport and editor state stays in `ReviewApp`.
 
-Fields:
+## Rendering and performance
 
-- `path`: current file path.
-- `old_path`: previous path for renames.
-- `status`: added, modified, deleted, renamed, binary, mode-changed. Git-reported copies are normalized to added files for display.
-- `language`: syntax highlighting language.
-- `old_lines`: optional old-side lines.
-- `new_lines`: optional new-side lines.
-- `visible_blocks`: currently visible code blocks and expansion rows.
+The default layout devotes the full terminal to the review. `T` reveals a bounded navigation column split between a collapsed file tree and grouped comment list.
 
-### ReviewLine
+The review pane uses physical rendered-row heights for scrolling and page movement, so wrapped source, inline comments, and expansion controls stay aligned. The current file header is sticky when its original header scrolls above the viewport.
 
-Represents one displayed code line.
+The TUI builds a retained frame of styled row regions and compares it with the last presented frame. Identical frames emit no bytes, while changed frames overwrite only changed rows. Updates are synchronized when the terminal supports synchronized-output mode, and no redraw path clears the screen before repainting. Inline menus use the same principles at physical-row granularity, retain their rendered width across resize events, and overwrite complete changed rows without clear-screen commands.
 
-Fields:
+Files with at most 180 lines are initially shown in full. Larger files show merged 20-line context windows around changes. Expansion controls reveal another 20 lines per activation. Syntax highlighting is computed only for visible source rows and retained in an in-session cache; startup does not tokenize every changed file.
 
-- `kind`: context, addition, deletion, metadata, expansion, comment.
-- `old_line_number`: old-side line number when applicable.
-- `new_line_number`: new-side line number when applicable.
-- `text`: display text.
-- `highlight_language`: language used for syntax highlighting.
-- `file_path`: owning file.
-- `is_selectable`: whether the user can select it.
+The intended normal operating envelope is up to 200 changed files and 20,000 expanded lines. Binary detection, bounded initial context, collapsed paths, literal tmux buffers, and lazy highlighting keep memory and redraw costs predictable.
 
-### ExpansionRow
+## Terminal safety
 
-Represents hidden context that can be expanded.
+A guard restores mouse reporting, bracketed paste, raw mode, cursor visibility, and the alternate screen on every normal error path. `Ctrl+C` in the initial source menu exits immediately. After source selection, the first interrupt shows a warning and the second consecutive interrupt exits; any other action clears the warning.
 
-Fields:
+Terminal dimensions, mouse coordinates, filenames, source text, comments, and pane labels are treated as untrusted values. Width arithmetic is saturating, Unicode display width is measured explicitly, far-right SGR mouse positions are mapped without narrowing overflow, and literal terminal control characters are rendered or delivered as visible safe glyphs.
 
-- `file_path`: owning file.
-- `direction`: above or below.
-- `anchor_line`: nearby visible line.
-- `remaining_count`: hidden line count.
-- `expand_count`: default `20`.
+## Dependencies
 
-### ReviewComment
+The direct dependency set is deliberately small:
 
-Represents a saved user comment.
-
-Fields:
-
-- `id`: stable in-session identifier.
-- `file_path`: file path.
-- `start_line`: first selected new-side line.
-- `end_line`: last selected new-side line.
-- `selected_text`: selected context lines.
-- `body`: comment body.
-- `created_at`: timestamp for deterministic ordering if needed.
-
-Comments should anchor to new-side line numbers for added and context lines. Deleted-line comments need a clear policy because they do not have new-side line numbers. The preferred policy is to allow deleted-line comments and label them as old-side lines in output.
-
-### ReviewArchive
-
-Represents the persisted record for one completed non-empty review.
-
-Fields:
-
-- `path`: absolute repository path where the review occurred.
-- `branch`: current Git branch, or a detached-head label if not on a branch.
-- `review_message`: exact generated message used for stdout or tmux delivery.
-
-Archive files live under `$XDG_DATA_HOME/review/reviews` with a `~/.local/share/review/reviews` fallback. The filename should be unique and stable enough to avoid collisions, typically using a UTC timestamp plus random suffix. History commands read this directory directly, ignore malformed archive files, sort recent valid reviews first, and cap the default list at 10 entries.
-
-## Diff Representation
-
-The review pane should be a unified, continuous document made of file sections.
-
-Each file section contains:
-
-- file header,
-- optional rename/delete/add metadata,
-- visible blocks of code,
-- expansion rows,
-- inline comment blocks.
-
-The UI should not replace the right pane content when a file is selected. It scrolls within the continuous document.
-
-## Syntax Highlighting Strategy
-
-Use a mature syntax highlighting library rather than implementing lexers manually.
-
-The highlighter must support at least:
-
-- Java,
-- Python,
-- JavaScript,
-- TypeScript,
-- CSS,
-- HTML,
-- JSX,
-- SQL,
-- XML,
-- JSON,
-- properties,
-- YAML,
-- Markdown,
-- Nix,
-- gitignore-style ignore files,
-- JSON-compatible lock files.
-
-Language detection should use file extension first, then filename, then fallback to plain text.
-
-Recommended extension mapping:
-
-| Extension | Language |
+| Crate | Purpose |
 | --- | --- |
-| `.java` | Java |
-| `.py`, `.pyi` | Python |
-| `.js`, `.mjs`, `.cjs` | JavaScript |
-| `.ts` | TypeScript |
-| `.tsx` | TSX or JSX-capable TypeScript |
-| `.jsx` | JSX |
-| `.css` | CSS |
-| `.html`, `.htm` | HTML |
-| `.sql` | SQL |
-| `.xml` | XML |
-| `.json` | JSON |
-| `.properties` | Java properties |
-| `.yml`, `.yaml` | YAML |
-| `.md`, `.markdown` | Markdown |
-| `.nix` | Nix |
-| `.lock` | JSON |
-| `.gitignore`, `.ignore`, `.dockerignore` | gitignore |
+| `crossterm` | portable terminal input, raw mode, mouse events, and drawing primitives |
+| `serde`, `serde_json` | stable archive schema and JSON persistence |
+| `similar` | patience diff implementation |
+| `arborium` | maintained tree-sitter grammars and syntax spans, feature-limited to supported review languages |
+| `unicode-width` | correct terminal cell measurement |
 
-## State Management
+Feature flags exclude all unused grammars and rendering facilities. No asynchronous runtime, general CLI framework, TUI widget framework, time library, temporary-file library, or random-number library is required.
 
-Review state should expose explicit methods for mutations:
+## Testing seams
 
-- `select_file(path)`
-- `select_line(file_path, line_id)`
-- `move_selection(delta)`
-- `extend_selection(delta)`
-- `expand_context(expansion_id)`
-- `add_comment(range, body)`
-- `delete_comment(comment_id)` if deletion is implemented
-- `visible_file_for_scroll_offset(offset)`
+Unit tests cover diff construction, expansion windows, state transitions, safe formatting, archive uniqueness, menu ordering, path/language detection, editor wrapping, mouse coordinate arithmetic, and tmux parsing.
 
-The TUI should call these methods rather than editing lists directly.
+Integration tests create real temporary Git repositories and exercise combined worktree state, branch comparisons, untracked files, rename/delete/binary/mode changes, symlinks, CLI errors, no-change behavior, and history output separation.
 
-## Synchronization Rules
+The full acceptance pass additionally drives the actual executable in isolated real tmux servers. This covers terminal rendering, keyboard and mouse decoding, delivery, cleanup, and interaction sequences that cannot be proven by pure state tests.
 
-File pane to review pane:
+## Extension points
 
-- Selecting a file scrolls the review pane to that file header or first changed line.
-- The selected file becomes highlighted.
-
-Review pane to file pane:
-
-- When the review pane scrolls, compute the file section nearest the top visible code line.
-- Highlight that file in the file pane.
-- If the highlighted file is outside the file pane viewport, scroll the file pane enough to show it.
-
-Comment list to review pane:
-
-- Build comment-list rows from saved comments grouped by file.
-- Prefix each comment row with its referenced line number or range.
-- Selecting a comment row selects the matching inline comment item in the review document and scrolls it into view.
-
-Sticky file header:
-
-- If a file section extends beyond the current review pane viewport, show the current file name at the top of the review pane while scrolling within that file.
-- The sticky header must update immediately when the next file section reaches the top.
-
-## Error Handling
-
-Internal modules should raise typed exceptions where useful:
-
-- `NotAGitRepository`
-- `NoChangesFound`
-- `GitCommandError`
-- `DiffParseError`
-- `TmuxUnavailable`
-- `TmuxSendError`
-
-The CLI should catch these and render friendly terminal messages.
-
-## Dependency Guidance
-
-The project should prefer stable, maintained Python packages for:
-
-- terminal UI,
-- syntax highlighting,
-- testing.
-
-The implementation should avoid coupling the domain model to a specific TUI library so that the parser, state transitions, formatter, and tmux integration remain unit-testable.
-
-## Performance Targets
-
-The tool should feel responsive for normal review sizes:
-
-- up to 200 changed files,
-- up to 20,000 visible lines after expansion,
-- comments added interactively without noticeable delay.
-
-Comment input redraw is a hot path. Rendering should avoid rebuilding selection ranges, comment ranges, or file trees for every visible row on every typed character.
-
-Large repositories and very large generated files should be handled gracefully by truncation, binary detection, or warnings.
-
-## Future Extension Points
-
-The design should allow later support for:
-
-- additional colon commands,
-- saved review drafts,
-- direct GitHub/GitLab publishing,
-- comment editing and deletion,
-- filtering by file status or path,
-- hiding whitespace-only changes,
-- side-by-side diff mode,
-- custom output templates.
+Additional colon commands belong in the TUI command dispatcher. New delivery mechanisms consume the already formatted message. New output formats implement serialization over `ReviewState`; they do not inspect terminal state. Direct hosting-provider publication, draft persistence, file editing, and side-by-side rendering remain out of scope for the current release.

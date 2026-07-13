@@ -4,17 +4,19 @@
 
 Do not call review-tool work complete after unit tests alone. A full regression pass for this repository means all of the following:
 
-1. Run the automated suite in a Pygments-capable Python environment:
+1. Run the Rust formatting, lint, test, and release-build gates in the project development environment:
 
    ```sh
-   nix shell --impure --expr 'with import <nixpkgs> {}; python3.withPackages (ps: [ ps.pygments ])' -c bash -lc \
-     'PYTHONPATH=src python -m compileall src tests && PYTHONPATH=src python -m unittest discover -s tests'
+   nix develop -c cargo fmt --all -- --check
+   nix develop -c cargo clippy --all-targets -- -D warnings
+   nix develop -c cargo test --all-targets
+   nix develop -c cargo build --release
    ```
 
 2. Run a basic CLI smoke:
 
    ```sh
-   PYTHONPATH=src python -m review --help
+   target/release/review --help
    ```
 
 3. Run `git diff --check`.
@@ -45,7 +47,7 @@ Do not call review-tool work complete after unit tests alone. A full regression 
 
    Confirm the captured viewport changes after both events.
 
-7. After running compile/test commands, remove generated `__pycache__` directories before reporting or committing:
+7. Do not commit build output. If Python was used for an auxiliary regression assertion, remove generated `__pycache__` directories before reporting or committing:
 
    ```sh
    find src tests -type d -name __pycache__ -prune -exec rm -rf {} +

@@ -41,7 +41,7 @@ If Git commands fail, the CLI displays the failing operation and a concise expla
 
 When interactive source, branch, or delivery choices are needed, the CLI should render a compact inline menu using only a few terminal lines. Selection uses `Up`, `Down`, and `Enter`; `q` and `Esc` cancel simple option menus such as review-source and review-history selection. The review-source menu lists PR-style review above uncommitted review. The menu must avoid full-screen dark-background presentation so it remains readable in light terminals.
 
-Inline menus must account for terminal wrapping in narrow terminals. Long option labels may wrap visually, but moving the selection must clear the full previously rendered menu and redraw in place without leaving stale wrapped rows behind.
+Inline menus must account for terminal wrapping in narrow terminals. Long option labels may wrap visually, but moving the selection must update only affected physical rows in place without blanking unchanged rows or leaving stale wrapped content behind.
 
 In the initial review-source menu, one `Ctrl+C` cancels the program. After that first source choice is accepted, cancellation is intentionally harder: branch selection, delivery selection, and the TUI require two consecutive `Ctrl+C` presses before exiting.
 
@@ -169,6 +169,8 @@ While editing a comment message, `j` and `k` are inserted as text and do not nav
 
 The UI must keep the selected line visible while navigating. Review-pane arrow navigation should move like an editor: the selection moves inside the viewport first, then scrolling begins near the lower edge with roughly three rows preserved below the selection. Page navigation moves by a viewport while preserving the selected line's screen offset when possible.
 
+Mouse range selection must preserve its initial anchor in both directions. Repeated upward drag events must extend toward earlier lines without moving the original lower anchor.
+
 ## Commenting
 
 Pressing `Enter` on a selected code line opens an inline comment input below the selected line.
@@ -186,6 +188,7 @@ The comment input behaves like a GitHub-style line comment:
 - `Option+Left` and `Option+Right` move by word for terminals that send supported Meta or modified-arrow sequences,
 - `Ctrl+W` deletes the word before the insertion cursor,
 - typed text and Backspace edit at the current insertion cursor,
+- long comment input scrolls its editor rows to keep the insertion cursor visible,
 - `Enter` submits the comment,
 - `Esc` cancels the comment,
 - the saved comment appears inline below the referenced range.
@@ -246,7 +249,7 @@ If no comments exist, the TUI exits immediately without confirmation and the CLI
 
 Inside the TUI, `Ctrl+C` is not a single-key quit. The first press shows a warning, and only a second consecutive `Ctrl+C` exits. Any other key clears the pending interrupt.
 
-After the TUI closes, the CLI must restore the terminal to a clean prompt state before rendering delivery selection or stdout output. Stale review panes, command text, and cursor positions from the curses screen must not overlap the delivery menu or generated review message.
+After the TUI closes, the CLI must restore normal terminal attributes and cursor visibility before rendering delivery selection or stdout output. Leaving the alternate screen must restore the original terminal contents without an additional full-screen clear.
 
 ## Delivery
 

@@ -57,6 +57,7 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] File pane can be shown with `T`.
 - [ ] File pane lists changed files.
 - [ ] File pane renders changed files as a collapsed directory tree.
+- [ ] File tree status markers distinguish added, modified, and deleted files with light-theme-safe colors while preserving selection styling.
 - [ ] Left pane includes a comment list below the file tree.
 - [ ] Comment list groups comments by file.
 - [ ] Comment list entries include line number or range and a shortened comment preview.
@@ -96,6 +97,7 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] `T` shows and hides the file pane.
 - [ ] File pane arrow navigation works.
 - [ ] File pane arrow navigation follows rendered tree file order.
+- [ ] File rows in the tree follow the same order as file headers in the continuous review pane, including root files interleaved with directories.
 - [ ] File pane `Enter` scrolls to selected file.
 - [ ] File pane shows a bottom scroll indicator when more modified-file rows are below.
 - [ ] Comment pane shows a bottom scroll indicator when more comment rows are below.
@@ -108,6 +110,8 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Mouse click selects files and lines.
 - [ ] Mouse wheel scrolling works where supported.
 - [ ] Mouse wheel scrolling works from far-right columns in wide review panes.
+- [ ] Mouse wheel events over the visible file tree scroll the tree instead of the review pane.
+- [ ] Mouse wheel events over the comment list scroll that list independently.
 - [ ] First `Ctrl+C` in the TUI shows confirmation instead of quitting.
 - [ ] Second consecutive `Ctrl+C` in the TUI quits.
 

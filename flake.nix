@@ -1,5 +1,5 @@
 {
-  description = "Terminal code review tool for Git changes and coding-agent feedback";
+  description = "Fast terminal code review for local Git changes";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
@@ -21,26 +21,27 @@
         system:
         let
           pkgs = pkgsFor system;
-          pythonPackages = pkgs.python3Packages;
           runtimePath = lib.makeBinPath [
             pkgs.gitMinimal
             pkgs.tmux
           ];
         in
         rec {
-          review = pythonPackages.buildPythonApplication {
+          review = pkgs.rustPlatform.buildRustPackage {
             pname = "review";
-            version = "0.1.3";
-            src = ./.;
-            pyproject = true;
+            version = "0.2.0";
+            src = lib.fileset.toSource {
+              root = ./.;
+              fileset = lib.fileset.unions [
+                ./Cargo.lock
+                ./Cargo.toml
+                ./README.md
+                ./src
+                ./tests
+              ];
+            };
 
-            build-system = [
-              pythonPackages.setuptools
-            ];
-
-            dependencies = [
-              pythonPackages.pygments
-            ];
+            cargoLock.lockFile = ./Cargo.lock;
 
             nativeBuildInputs = [
               pkgs.makeWrapper
@@ -51,25 +52,19 @@
               pkgs.tmux
             ];
 
-            pythonImportsCheck = [
-              "review"
-            ];
-
             checkPhase = ''
               runHook preCheck
-              PYTHONPATH="$PWD/src:$PYTHONPATH" python -m unittest discover -s tests -p 'test_*.py' -v
+              cargo test --all-targets
               runHook postCheck
             '';
 
-            makeWrapperArgs = [
-              "--prefix"
-              "PATH"
-              ":"
-              runtimePath
-            ];
+            postInstall = ''
+              wrapProgram "$out/bin/review" \
+                --prefix PATH : ${runtimePath}
+            '';
 
             meta = {
-              description = "Terminal code review tool for Git changes and coding-agent feedback";
+              description = "Fast terminal code review for local Git changes";
               mainProgram = "review";
               platforms = lib.platforms.linux;
             };
@@ -85,9 +80,7 @@
           review = {
             type = "app";
             program = lib.getExe self.packages.${system}.review;
-            meta = {
-              description = "Terminal code review tool for Git changes and coding-agent feedback";
-            };
+            meta.description = "Fast terminal code review for local Git changes";
           };
 
           default = review;
@@ -97,5 +90,24 @@
       checks = forAllSystems (system: {
         review = self.packages.${system}.review;
       });
+
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        {
+          default = pkgs.mkShell {
+            packages = [
+              pkgs.cargo
+              pkgs.clippy
+              pkgs.gitMinimal
+              pkgs.rustc
+              pkgs.rustfmt
+              pkgs.tmux
+            ];
+          };
+        }
+      );
     };
 }

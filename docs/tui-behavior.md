@@ -25,6 +25,8 @@ The left file pane should use roughly 25-35% of the terminal width, with a sensi
 
 The layout must degrade gracefully in narrow terminals. If the terminal is too small for a usable two-pane view, the app should show a clear message.
 
+Rendering uses a retained terminal frame. Unchanged rows produce no output, changed rows are overwritten directly without clearing the screen first, and multi-row updates are bracketed as a synchronized terminal update. Navigation, typing, focus changes, and scrolling must not flash through an empty intermediate screen.
+
 ## Focus
 
 Exactly one pane is focused at a time.
@@ -37,7 +39,7 @@ Mouse click inside a pane focuses that pane.
 
 ## File Pane
 
-The file pane lists modified files as a tree. Directory chains with no modified file between them should be collapsed into a compact path such as `src/review/`.
+The file pane lists modified files as a tree. File rows must appear in the same order as file headers in the continuous review pane; directory and file siblings are therefore interleaved by full-path ordering instead of grouping every directory before every file. Directory chains with no modified file between them should be collapsed into a compact path such as `src/ui/`.
 
 Each file entry should display:
 
@@ -45,16 +47,18 @@ Each file entry should display:
 - path,
 - comment count if comments exist for the file.
 
-Suggested markers:
+The status marker is bold and color-coded while the path keeps the normal tree foreground. Colors use dark terminal roles that remain readable on light terminal backgrounds, and the marker color remains present when the row is selected.
 
-| Status | Marker |
-| --- | --- |
-| Modified | `M` |
-| Added | `A` |
-| Deleted | `D` |
-| Renamed | `R` |
-| Copied file reported by Git | `A` |
-| Binary | `B` |
+| Status | Marker | Color role |
+| --- | --- | --- |
+| Modified | `M` | dark blue |
+| Added | `A` | dark green |
+| Deleted | `D` | dark red |
+| Renamed | `R` | dark magenta |
+| Copied file reported by Git | `A` | dark green |
+| Binary | `B` | dark cyan |
+| Mode changed | `M` | dark yellow |
+| Type changed | `T` | dark magenta |
 
 The highlighted file is the file currently visible in the review pane or selected by the user.
 
@@ -243,9 +247,11 @@ Mouse behavior:
 - clicking a pane focuses it,
 - clicking a file selects it and scrolls to that file,
 - clicking a code line selects it,
-- dragging across code lines may select a range if supported,
+- dragging across code lines may select a range if supported; the original mouse-down row remains the anchor whether the drag moves upward or downward,
 - clicking an expansion row activates or selects it,
-- wheel scrolling in the review pane updates the highlighted file in the file pane.
+- wheel scrolling is routed by pointer position: the file tree, comment list, and review pane each scroll independently when hovered,
+- wheel scrolling in the review pane updates the highlighted file in the file pane,
+- wheel events over the pane separator or status row do nothing.
 
 Mouse wheel events should work across the full review pane width, including very wide terminals. The TUI enables extended SGR mouse coordinates so columns beyond the legacy mouse-coordinate range are still decoded.
 
@@ -285,6 +291,8 @@ The comment block should include a compact left-side marker showing the range. T
 The exact visual style may vary, but the reference range must be obvious. Inline saved comments show only the user's comment body, not a repeated `comment on lines ...` title.
 
 When editing an existing saved comment, keyboard changes must render immediately in the inline comment block as the user types. The saved comment body is updated in the review state only when the edit is submitted.
+
+Long new or edited comments scroll their editor rows within the available viewport so the insertion cursor remains visible. Bracketed paste inserts multi-line comment text; search and command prompts accept paste as sanitized single-line text.
 
 When a saved comment is selected or being edited, focus should be shown with a clear light-theme-safe background treatment rather than underline styling.
 
@@ -351,7 +359,7 @@ The CLI then prompts for a delivery target outside or inside a simple terminal s
 
 The final review message must be generated after the TUI closes so stdout delivery is clean and not mixed with TUI drawing artifacts.
 
-Before the delivery menu or stdout output is rendered, the CLI restores normal terminal attributes, makes the cursor visible, clears the stale TUI screen, and moves the prompt to a predictable bottom-of-terminal position. This prevents inline menus from being drawn in the middle of leftover review panes after curses exits.
+Before the delivery menu or stdout output is rendered, leaving the alternate screen restores the original terminal contents; the CLI then restores normal attributes and makes the cursor visible. It does not perform another full-screen clear.
 
 ## Empty Review Behavior
 
