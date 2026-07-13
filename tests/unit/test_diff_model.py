@@ -1,5 +1,7 @@
 import unittest
+from unittest import mock
 
+from review import diff_model
 from review.diff_model import build_review_lines, create_review_file, initial_visible_intervals
 
 
@@ -43,6 +45,36 @@ class DiffModelTests(unittest.TestCase):
         file = create_review_file("src/Main.java", "modified", ["class A {}"], ["class B {}"])
         self.assertEqual(file.language, "java")
         self.assertEqual(file.status_marker(), "M")
+
+    def test_large_repetitive_middle_enables_sequence_matcher_autojunk(self):
+        old = ["old start", *(["same"] * 1_000), "old end"]
+        new = ["new start", *(["same"] * 1_000), "new end"]
+
+        with mock.patch.object(diff_model, "SequenceMatcher", wraps=diff_model.SequenceMatcher) as matcher:
+            rows = build_review_lines(old, new)
+
+        self.assertTrue(matcher.call_args.kwargs["autojunk"])
+        self.assertEqual([row.kind for row in rows].count("context"), 1_000)
+        self.assertEqual([row.kind for row in rows].count("deletion"), 2)
+        self.assertEqual([row.kind for row in rows].count("addition"), 2)
+
+    def test_large_repetitive_middle_resynchronizes_after_insert(self):
+        old = ["old start", *(["same"] * 1_000), "old end"]
+        new = ["new start", "inserted", *(["same"] * 1_000), "new end"]
+
+        rows = build_review_lines(old, new)
+
+        self.assertEqual([row.kind for row in rows].count("context"), 1_000)
+        self.assertIn("inserted", [row.text for row in rows if row.kind == "addition"])
+
+    def test_very_large_rewrite_uses_linear_coarse_diff(self):
+        with (
+            mock.patch.object(diff_model, "COARSE_DIFF_LINE_THRESHOLD", 4),
+            mock.patch.object(diff_model, "SequenceMatcher", side_effect=AssertionError("exact matcher should be skipped")),
+        ):
+            rows = build_review_lines(["a", "b", "c"], ["x", "y", "z"])
+
+        self.assertEqual([row.kind for row in rows], ["deletion"] * 3 + ["addition"] * 3)
 
 
 if __name__ == "__main__":

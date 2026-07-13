@@ -86,6 +86,25 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("git merge-base HEAD missing failed", result.stderr)
 
+    @unittest.skipIf(
+        os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+        "POSIX non-root file permissions are required",
+    )
+    def test_unreadable_changed_file_is_reported_without_traceback(self):
+        with self.make_repo() as temp:
+            root = Path(temp)
+            path = root / "app.js"
+            path.write_text("const value = 2;\n", encoding="utf-8")
+            path.chmod(0)
+            try:
+                result = self.run_review(root, "--source", "uncommitted", "--no-tui", "--stdout")
+            finally:
+                path.chmod(0o600)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("could not read changed file app.js", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+
     def test_history_ls_and_display_work_outside_git_repository(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "not-a-repo"

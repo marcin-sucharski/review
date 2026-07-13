@@ -76,15 +76,18 @@ Choosing either local delivery option still writes the local JSON archive first 
 
 The tool should send the formatted review text literally, then press Enter.
 
-Recommended tmux command strategy:
+Recommended tmux command strategy, using a unique buffer name per delivery:
 
 ```bash
-tmux load-buffer -
-tmux paste-buffer -t <pane-id>
+tmux load-buffer -b <unique-buffer> -
+tmux paste-buffer -d -b <unique-buffer> -t <pane-id>
 tmux send-keys -t <pane-id> Enter
 ```
 
 Using a buffer is safer for multi-line text than passing a long string through shell arguments.
+The `-d` paste deletes the named buffer immediately after use. If paste fails, the sender explicitly deletes
+the named buffer before reporting the error so review text is not retained in tmux and concurrent deliveries
+cannot overwrite one another's payload.
 
 The implementation must avoid shell interpretation of the review comments.
 

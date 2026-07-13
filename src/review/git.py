@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .diff_model import ReviewFile, ReviewSource, create_review_file
-from .errors import GitCommandError, NoChangesFound, NotAGitRepository
+from .errors import GitCommandError, NoChangesFound, NotAGitRepository, WorktreeReadError
 
 
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -298,6 +298,7 @@ def _create_review_file_from_bytes(
 ) -> ReviewFile:
     if binary:
         return create_review_file(path, status, [], [], old_path=old_path, binary=True, metadata=metadata)
+    text_metadata = [*(metadata or []), *_trailing_newline_metadata(old_bytes, new_bytes)]
     return create_review_file(
         path,
         status,
@@ -305,7 +306,7 @@ def _create_review_file_from_bytes(
         _decode_lines(new_bytes),
         old_path=old_path,
         binary=binary,
-        metadata=metadata,
+        metadata=text_metadata,
     )
 
 
@@ -344,11 +345,26 @@ def _read_worktree(root: Path, path: str) -> bytes | None:
     if full_path.is_symlink():
         try:
             return os.readlink(os.fsencode(full_path))
-        except OSError:
-            return None
+        except OSError as exc:
+            raise WorktreeReadError(f"could not read changed symlink {path}: {exc.strerror or exc}") from exc
     if not full_path.exists() or not full_path.is_file():
         return None
-    return full_path.read_bytes()
+    try:
+        return full_path.read_bytes()
+    except OSError as exc:
+        raise WorktreeReadError(f"could not read changed file {path}: {exc.strerror or exc}") from exc
+
+
+def _trailing_newline_metadata(old_bytes: bytes, new_bytes: bytes) -> list[str]:
+    old_missing = bool(old_bytes) and not old_bytes.endswith(b"\n")
+    new_missing = bool(new_bytes) and not new_bytes.endswith(b"\n")
+    if old_missing and new_missing:
+        return ["Old and new files have no trailing newline"]
+    if old_missing:
+        return ["Old file had no trailing newline"]
+    if new_missing:
+        return ["New file has no trailing newline"]
+    return []
 
 
 def _decode_lines(data: bytes) -> list[str]:

@@ -193,6 +193,15 @@ class GitIntegrationTests(unittest.TestCase):
         self.assertTrue(binary.binary)
         self.assertEqual(binary.status, "binary")
 
+    def test_collect_uncommitted_preserves_trailing_newline_only_change(self):
+        (self.root / "web/app.ts").write_bytes(b"export const value = 1;")
+
+        _, files = collect_uncommitted(self.root)
+
+        app = [file for file in files if file.path == "web/app.ts"][0]
+        self.assertEqual([line.kind for line in app.lines], ["context"])
+        self.assertIn("New file has no trailing newline", app.metadata)
+
     def test_collect_uncommitted_preserves_symlink_targets_without_dereferencing(self):
         external = self.root.parent / "outside-target.txt"
         external.write_text("external file contents\n", encoding="utf-8")

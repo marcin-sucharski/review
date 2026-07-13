@@ -1,8 +1,9 @@
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from review.errors import GitCommandError
+from review.errors import GitCommandError, WorktreeReadError
 from review import git
 from review.git import parse_name_status_z, repository_root, run_git
 
@@ -62,6 +63,20 @@ class GitParseTests(unittest.TestCase):
         self.assertTrue(file.binary)
         self.assertEqual(file.lines, [])
         self.assertEqual(file.metadata, ["binary"])
+
+    def test_trailing_newline_only_change_is_visible_as_metadata(self):
+        file = git._create_review_file_from_bytes("notes.txt", "modified", b"same\n", b"same")
+
+        self.assertEqual([line.kind for line in file.lines], ["context"])
+        self.assertIn("New file has no trailing newline", file.metadata)
+
+    def test_worktree_read_error_is_user_facing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "locked.txt"
+            path.write_text("locked\n", encoding="utf-8")
+            with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "Permission denied")):
+                with self.assertRaisesRegex(WorktreeReadError, "could not read changed file locked.txt"):
+                    git._read_worktree(Path(temp), "locked.txt")
 
 
 if __name__ == "__main__":

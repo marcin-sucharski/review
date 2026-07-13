@@ -23,6 +23,10 @@ class DiffParseError(ReviewError):
     """Raw diff metadata could not be parsed."""
 
 
+class WorktreeReadError(ReviewError):
+    """A changed worktree path could not be read."""
+
+
 class TmuxUnavailable(ReviewError):
     """tmux is not installed or cannot be reached."""
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from typing import Callable
 
@@ -97,11 +98,13 @@ def list_panes(runner: Runner = default_runner) -> list[TmuxPane]:
 def send_text(pane_id: str, text: str, runner: Runner = default_runner) -> None:
     if not tmux_available():
         raise TmuxUnavailable("tmux is not installed")
-    load = runner(["tmux", "load-buffer", "-"], text)
+    buffer_name = f"review-{uuid.uuid4().hex}"
+    load = runner(["tmux", "load-buffer", "-b", buffer_name, "-"], text)
     if load.returncode != 0:
         raise TmuxSendError(load.stderr.strip() or "tmux load-buffer failed")
-    paste = runner(["tmux", "paste-buffer", "-t", pane_id], None)
+    paste = runner(["tmux", "paste-buffer", "-d", "-b", buffer_name, "-t", pane_id], None)
     if paste.returncode != 0:
+        runner(["tmux", "delete-buffer", "-b", buffer_name], None)
         raise TmuxSendError(paste.stderr.strip() or f"tmux paste-buffer failed for {pane_id}")
     enter = runner(["tmux", "send-keys", "-t", pane_id, "Enter"], None)
     if enter.returncode != 0:

@@ -222,4 +222,9 @@ Recommended safeguards:
 - avoid syntax highlighting extremely long lines if it hurts responsiveness,
 - allow expansion in chunks.
 
-The exact thresholds should be documented after implementation.
+For large inputs, the line matcher removes identical prefixes and suffixes before calculating the changed
+middle. It enables `SequenceMatcher` duplicate suppression when either unmatched side reaches 1,000 lines. If
+the two unmatched sides total more than 20,000 lines, the middle is represented as one linear delete/add
+replacement instead of running a potentially quadratic exact match. Large replacement blocks use a bounded 64-line lookahead to
+resynchronize unchanged repeated content without reintroducing quadratic matching. Context expansion remains
+available for the unchanged prefix and suffix.
