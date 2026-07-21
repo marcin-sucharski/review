@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Stdout, Write};
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{
@@ -18,6 +19,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::error::{Result, ReviewError};
 use crate::file_tree::{FileTreeKind, build_file_tree};
+use crate::git::refresh_reviewed_files;
 use crate::model::{FileStatus, LineKind, ReviewComment, ReviewFile};
 use crate::state::{Activation, DocumentItem, DocumentKind, ReviewState, Selection};
 use crate::syntax::{
@@ -27,6 +29,7 @@ use crate::syntax::{
     SyntaxHighlighter, TAG_FOREGROUND, TYPE_FOREGROUND,
 };
 use crate::tmux::inside_tmux;
+use crate::watch::{FileMonitor, MonitorBatch};
 
 const GUTTER_WIDTH: usize = 9;
 const MOUSE_SCROLL_LINES: usize = 3;
@@ -39,6 +42,8 @@ const SEARCH_BACKGROUND: Color = Color::AnsiValue(226);
 const SELECTION_BACKGROUND: Color = Color::AnsiValue(229);
 const INITIAL_STATUS: &str = "Tab switches panes. T toggles left pane. z centers code. :q quits.";
 const INTERRUPT_WARNING: &str = "Press Ctrl+C again to quit review.";
+const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const REFRESH_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Focus {
@@ -217,6 +222,8 @@ pub struct ReviewApp<'a> {
     last_height: u16,
     last_left_width: u16,
     previous_frame: Option<RenderFrame>,
+    monitor: Option<FileMonitor>,
+    refresh_retry: Option<(Instant, MonitorBatch)>,
 }
 
 impl<'a> ReviewApp<'a> {
@@ -256,6 +263,8 @@ impl<'a> ReviewApp<'a> {
             last_height: 24,
             last_left_width: 0,
             previous_frame: None,
+            monitor: None,
+            refresh_retry: None,
         }
     }
 
@@ -267,17 +276,113 @@ impl<'a> ReviewApp<'a> {
         }
         let mut output = io::stdout();
         let _guard = TerminalGuard::enter(&mut output)?;
+        match FileMonitor::new(&self.state.repository_root) {
+            Ok(monitor) => self.monitor = Some(monitor),
+            Err(error) => self.status = format!("Monitoring unavailable: {error}"),
+        }
+        self.draw(&mut output)?;
         while !self.quit_requested {
-            self.draw(&mut output)?;
-            let event = event::read()
-                .map_err(|error| ReviewError::io("could not read terminal input", error))?;
-            self.handle_event(event);
+            let mut redraw = false;
+            if event::poll(EVENT_POLL_INTERVAL)
+                .map_err(|error| ReviewError::io("could not poll terminal input", error))?
+            {
+                let event = event::read()
+                    .map_err(|error| ReviewError::io("could not read terminal input", error))?;
+                self.handle_event(event);
+                redraw = true;
+            }
+            redraw |= self.process_file_changes();
+            if redraw && !self.quit_requested {
+                self.draw(&mut output)?;
+            }
         }
         if self.cancel_requested {
             Err(ReviewError::Cancelled)
         } else {
             Ok(())
         }
+    }
+
+    fn process_file_changes(&mut self) -> bool {
+        let reviewed_paths = self
+            .state
+            .files
+            .iter()
+            .flat_map(|file| {
+                std::iter::once(file.path.clone()).chain(file.old_path.iter().cloned())
+            })
+            .collect::<Vec<_>>();
+        let retry_ready = self
+            .refresh_retry
+            .as_ref()
+            .is_some_and(|(deadline, _)| Instant::now() >= *deadline);
+        let (batch, is_retry) = if retry_ready {
+            let (_, batch) = self.refresh_retry.take().expect("checked above");
+            (Some(batch), true)
+        } else {
+            (
+                self.monitor
+                    .as_mut()
+                    .and_then(|monitor| monitor.poll(&reviewed_paths)),
+                false,
+            )
+        };
+        let Some(batch) = batch else {
+            return false;
+        };
+        let result = refresh_reviewed_files(
+            &self.state.repository_root,
+            &self.state.source,
+            &self.state.files,
+            &batch.paths,
+            batch.refresh_all,
+        );
+        let refreshes = match result {
+            Ok(refreshes) => refreshes,
+            Err(error) => {
+                self.status = format!("Could not reload reviewed files: {error}");
+                if !is_retry {
+                    self.refresh_retry = Some((Instant::now() + REFRESH_RETRY_DELAY, batch));
+                }
+                return true;
+            }
+        };
+        let mut moved = 0;
+        let mut detached = 0;
+        let mut deleted = 0;
+        for refresh in refreshes {
+            let new_path = refresh.file.as_ref().map(|file| file.path.clone());
+            let outcome = self.state.replace_file(
+                &refresh.old_path,
+                refresh.file,
+                refresh.physically_deleted,
+            );
+            moved += outcome.moved_comments;
+            detached += outcome.detached_comments;
+            deleted += outcome.deleted_comments;
+            self.highlighted.retain(|(path, _), _| {
+                path != &refresh.old_path && new_path.as_ref() != Some(path)
+            });
+        }
+        if self.comment_mode {
+            let edited_exists = self
+                .editing_comment_id
+                .is_none_or(|id| self.state.comments.iter().any(|comment| comment.id == id));
+            if !edited_exists
+                || (self.editing_comment_id.is_none() && self.state.selected_range().is_none())
+            {
+                self.close_comment();
+            }
+        }
+        self.sync_comment_selection();
+        self.ensure_selected_visible();
+        self.previous_frame = None;
+        self.status = batch.warning.unwrap_or_else(|| {
+            format!(
+                "Files reloaded: {moved} comments moved, {detached} detached, {deleted} deleted."
+            )
+        });
+        true
     }
 
     fn draw(&mut self, output: &mut Stdout) -> Result<()> {
@@ -535,7 +640,9 @@ impl<'a> ReviewApp<'a> {
                 self.left_hit_map.insert(y, LeftHit::Comment(comment.id));
                 let selected = self.comment_pane_index == self.comment_scroll + slot;
                 let (start, end) = comment.sorted_rows();
-                let line_label = if start == end {
+                let line_label = if comment.is_file_level() {
+                    "File".to_owned()
+                } else if start == end {
                     format!("L{}", selected_line_number(comment))
                 } else {
                     format!(
@@ -1925,6 +2032,7 @@ fn selection_style(focused: bool) -> Style {
 
 const fn file_status_color(status: FileStatus) -> Color {
     match status {
+        FileStatus::Unchanged => Color::DarkGrey,
         FileStatus::Added => Color::DarkGreen,
         FileStatus::Modified => Color::DarkBlue,
         FileStatus::Deleted => Color::DarkRed,
@@ -1995,7 +2103,7 @@ fn scroll_footer(above: usize, below: usize) -> String {
 
 fn selected_line_number(comment: &ReviewComment) -> usize {
     comment
-        .selected_lines
+        .selected_lines()
         .first()
         .and_then(crate::model::ReviewLine::primary_line)
         .unwrap_or(comment.sorted_rows().0 + 1)
@@ -2003,7 +2111,7 @@ fn selected_line_number(comment: &ReviewComment) -> usize {
 
 fn selected_end_line_number(comment: &ReviewComment) -> usize {
     comment
-        .selected_lines
+        .selected_lines()
         .last()
         .and_then(crate::model::ReviewLine::primary_line)
         .unwrap_or(comment.sorted_rows().1 + 1)
@@ -2807,6 +2915,7 @@ mod tests {
 
     #[test]
     fn file_tree_status_colors_are_light_theme_safe_and_distinct() {
+        assert_eq!(file_status_color(FileStatus::Unchanged), Color::DarkGrey);
         assert_eq!(file_status_color(FileStatus::Added), Color::DarkGreen);
         assert_eq!(file_status_color(FileStatus::Modified), Color::DarkBlue);
         assert_eq!(file_status_color(FileStatus::Deleted), Color::DarkRed);

@@ -10,5 +10,6 @@ pub mod state;
 pub mod syntax;
 pub mod tmux;
 pub mod tui;
+pub mod watch;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

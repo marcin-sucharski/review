@@ -177,6 +177,14 @@ Fixture files should cover required languages:
 | Add comment to deleted line | Old-side line reference used or rejected by policy |
 | Multiple comments same file | Comments sorted by line |
 | Comments across files | Grouping remains correct |
+| Insert lines before a commented range | Exact range and comment move together |
+| Exact range occurs more than once | Nearest occurrence wins, with earlier row as tie-breaker |
+| Commented text is replaced | Comment stays at its previous row |
+| File becomes shorter | Comment shifts upward only enough to fit |
+| File becomes empty or binary | Comment remains editable at file level |
+| Text returns after file-level placement | Comment reattaches by exact match or clamped row |
+| Reviewed file is renamed | File, comments, and selection follow the rename |
+| Reviewed file is deleted | Its comments are deleted |
 
 ## TUI Rendering Tests
 

@@ -9,6 +9,7 @@ description = "Fast terminal code review for local Git changes"
 arborium = { version = "2.18.1", default-features = false, features = ["lang-css", "lang-dockerfile", "lang-html", "lang-ini", "lang-java", "lang-javascript", "lang-json", "lang-make", "lang-markdown", "lang-nix", "lang-python", "lang-rust", "lang-sql", "lang-toml", "lang-tsx", "lang-typescript", "lang-xml", "lang-yaml"] }
 arborium-theme = { version = "2.18.1", default-features = false }
 crossterm = { version = "0.29.0", default-features = false, features = ["bracketed-paste", "events"] }
+notify = "8.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 similar = "3.1.1"

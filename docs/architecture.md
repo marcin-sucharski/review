@@ -24,6 +24,7 @@ src/
   format.rs      Markdown and XML feedback serialization
   archive.rs     atomic XDG archive and local-file delivery
   tmux.rs        pane discovery and buffered delivery
+  watch.rs       debounced filesystem notifications for reviewed files
 tests/
   rust_git_integration.rs
   rust_cli_integration.rs
@@ -58,10 +59,11 @@ docs/
 2. The Git adapter reads the comparison base and final working-tree files.
 3. The model constructs ordered line records and initial context windows.
 4. Review state exposes one continuous document of headers, code, expansion rows, and inline comments.
-5. The TUI renders the current viewport and applies navigation, selection, comment, search, and mouse events to state.
-6. On `:q`, the formatter produces Markdown or XML from saved comments.
-7. A non-empty review is archived before delivery.
-8. The CLI writes stdout, creates a Markdown file, or sends the selected output to tmux.
+5. The TUI renders the current viewport, applies terminal input, and drains debounced filesystem notifications.
+6. A touched reviewed file is rebuilt against the session's frozen base; state relocates comments and selection before the next frame.
+7. On `:q`, the formatter produces Markdown or XML from saved comments.
+8. A non-empty review is archived before delivery.
+9. The CLI writes stdout, creates a Markdown file, or sends the selected output to tmux.
 
 ## Git comparison model
 
@@ -79,7 +81,7 @@ For each path, collection reads the old blob from the base commit and the new by
 
 `ReviewLine` contains its diff kind, text, stable row identity, and optional old/new line numbers. A selected range cannot cross a file boundary.
 
-`ReviewComment` contains a stable in-session ID, file, old/new line reference, selected source lines, and body. Deleted-line comments use old-side references in both output formats.
+`ReviewComment` contains a stable in-session ID, file, body, and either a line placement or a temporary file-level placement. Line placements retain selected diff rows as an exact relocation signature. File-level placements retain the previous signature while an empty or binary file has no commentable row. Deleted-line comments use old-side references in both output formats.
 
 `ReviewState` contains repository/source metadata, ordered files, current focus and selection, expansion state, and comments. TUI-only viewport and editor state stays in `ReviewApp`.
 
@@ -108,6 +110,7 @@ The direct dependency set is deliberately small:
 | Crate | Purpose |
 | --- | --- |
 | `crossterm` | portable terminal input, raw mode, mouse events, and drawing primitives |
+| `notify` | cross-platform filesystem change notifications |
 | `serde`, `serde_json` | stable archive schema and JSON persistence |
 | `similar` | patience diff implementation |
 | `arborium` | maintained tree-sitter grammars and syntax spans, feature-limited to supported review languages |

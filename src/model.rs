@@ -91,6 +91,7 @@ impl VisibleInterval {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileStatus {
+    Unchanged,
     Modified,
     Added,
     Deleted,
@@ -130,6 +131,7 @@ impl ReviewFile {
     #[must_use]
     pub const fn status_marker(&self) -> char {
         match self.status {
+            FileStatus::Unchanged => '=',
             FileStatus::Modified | FileStatus::Mode => 'M',
             FileStatus::Added => 'A',
             FileStatus::Deleted => 'D',
@@ -178,24 +180,77 @@ impl ReviewFile {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommentPlacement {
+    Lines {
+        start_row: usize,
+        end_row: usize,
+        selected_lines: Vec<ReviewLine>,
+    },
+    File {
+        preferred_start_row: usize,
+        preferred_end_row: usize,
+        selected_lines: Vec<ReviewLine>,
+    },
+}
+
+impl CommentPlacement {
+    #[must_use]
+    pub const fn sorted_rows(&self) -> (usize, usize) {
+        let (start, end) = match self {
+            Self::Lines {
+                start_row, end_row, ..
+            } => (*start_row, *end_row),
+            Self::File {
+                preferred_start_row,
+                preferred_end_row,
+                ..
+            } => (*preferred_start_row, *preferred_end_row),
+        };
+        if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        }
+    }
+
+    #[must_use]
+    pub fn selected_lines(&self) -> &[ReviewLine] {
+        match self {
+            Self::Lines { selected_lines, .. } | Self::File { selected_lines, .. } => {
+                selected_lines
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn is_file_level(&self) -> bool {
+        matches!(self, Self::File { .. })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReviewComment {
     pub id: u64,
     pub file_path: String,
-    pub start_row: usize,
-    pub end_row: usize,
+    pub placement: CommentPlacement,
     pub body: String,
-    pub selected_lines: Vec<ReviewLine>,
     pub order: u64,
 }
 
 impl ReviewComment {
     #[must_use]
     pub const fn sorted_rows(&self) -> (usize, usize) {
-        if self.start_row <= self.end_row {
-            (self.start_row, self.end_row)
-        } else {
-            (self.end_row, self.start_row)
-        }
+        self.placement.sorted_rows()
+    }
+
+    #[must_use]
+    pub fn selected_lines(&self) -> &[ReviewLine] {
+        self.placement.selected_lines()
+    }
+
+    #[must_use]
+    pub const fn is_file_level(&self) -> bool {
+        self.placement.is_file_level()
     }
 }
 

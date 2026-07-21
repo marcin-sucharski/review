@@ -2,7 +2,7 @@
 
 `review` is a fast terminal interface for reviewing local Git changes and writing line-level feedback. It is a native Rust executable with no runtime language environment.
 
-It can review the combined final state of staged, unstaged, and untracked changes, or compare the current branch and working tree with a target branch. Reviews can be printed as Markdown or XML, saved as Markdown, sent to a tmux pane, and reopened from the local review archive.
+It can review the combined final state of staged, unstaged, and untracked changes, or compare the current branch and working tree with a target branch. While the TUI is open, reviewed files are monitored and their diffs reload automatically; comments follow exact matching ranges and remain near their previous rows when code is rewritten. Reviews can be printed as Markdown or XML, saved as Markdown, sent to a tmux pane, and reopened from the local review archive.
 
 ## Install
 

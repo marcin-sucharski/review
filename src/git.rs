@@ -16,6 +16,13 @@ pub struct NameStatus {
     pub old_path: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileRefresh {
+    pub old_path: String,
+    pub file: Option<ReviewFile>,
+    pub physically_deleted: bool,
+}
+
 fn git_output<I, S>(root: &Path, args: I, check: bool) -> Result<Output>
 where
     I: IntoIterator<Item = S>,
@@ -135,8 +142,13 @@ fn branch_priority(branch: &str) -> u8 {
 }
 
 pub fn collect_uncommitted(root: &Path) -> Result<(ReviewSource, Vec<ReviewFile>)> {
-    let base = if has_head(root)? { "HEAD" } else { EMPTY_TREE };
-    let files = collect_worktree_files(root, base)?;
+    let base = if has_head(root)? {
+        let output = git_output(root, ["rev-parse", "HEAD"], true)?;
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    } else {
+        EMPTY_TREE.to_owned()
+    };
+    let files = collect_worktree_files(root, &base)?;
     if files.is_empty() {
         return Err(ReviewError::NoChanges(
             "no uncommitted changes found".to_owned(),
@@ -146,7 +158,7 @@ pub fn collect_uncommitted(root: &Path) -> Result<(ReviewSource, Vec<ReviewFile>
         ReviewSource {
             kind: ReviewKind::Uncommitted,
             target_branch: None,
-            base_ref: base.to_owned(),
+            base_ref: base,
         },
         files,
     ))
@@ -234,6 +246,112 @@ fn collect_worktree_files(root: &Path, base: &str) -> Result<Vec<ReviewFile>> {
     }
     files.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(files)
+}
+
+pub fn refresh_reviewed_files<S: std::hash::BuildHasher>(
+    root: &Path,
+    source: &ReviewSource,
+    reviewed: &[ReviewFile],
+    touched_paths: &HashSet<String, S>,
+    refresh_all: bool,
+) -> Result<Vec<FileRefresh>> {
+    let inventory = collect_worktree_files(root, &source.base_ref)?;
+    let mut used = HashSet::new();
+    let mut refreshes = Vec::new();
+
+    for previous in reviewed {
+        if !refresh_all && !path_is_touched(&previous.path, touched_paths) {
+            continue;
+        }
+        let candidate = inventory
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !used.contains(index))
+            .find(|(_, file)| file.path == previous.path)
+            .or_else(|| {
+                inventory
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| !used.contains(index))
+                    .find(|(_, file)| {
+                        let same_base = match (&previous.old_path, &file.old_path) {
+                            (Some(previous_old), Some(file_old)) => previous_old == file_old,
+                            (None, Some(file_old)) => file_old == &previous.path,
+                            _ => false,
+                        };
+                        same_base
+                            || (touched_paths.contains(&file.path)
+                                && file.old_path.as_deref() == Some(previous.path.as_str()))
+                            || (previous.status == FileStatus::Added
+                                && file.status == FileStatus::Added
+                                && touched_paths.contains(&file.path)
+                                && same_review_content(previous, file))
+                    })
+            });
+
+        let file = if let Some((index, file)) = candidate {
+            used.insert(index);
+            Some(file.clone())
+        } else if read_worktree(root, &previous.path)?.is_some() {
+            Some(build_unchanged(root, previous, &previous.path)?)
+        } else if let Some(base_path) = previous.old_path.as_deref().filter(|base_path| {
+            touched_paths.contains(*base_path) && fs::symlink_metadata(root.join(base_path)).is_ok()
+        }) {
+            Some(build_unchanged(root, previous, base_path)?)
+        } else {
+            None
+        };
+        let physically_deleted = file
+            .as_ref()
+            .is_none_or(|file| fs::symlink_metadata(root.join(&file.path)).is_err());
+        refreshes.push(FileRefresh {
+            old_path: previous.path.clone(),
+            file,
+            physically_deleted,
+        });
+    }
+    Ok(refreshes)
+}
+
+fn same_review_content(left: &ReviewFile, right: &ReviewFile) -> bool {
+    left.binary == right.binary
+        && (left.binary
+            || left
+                .lines
+                .iter()
+                .map(|line| (&line.kind, &line.text))
+                .eq(right.lines.iter().map(|line| (&line.kind, &line.text))))
+}
+
+fn path_is_touched<S: std::hash::BuildHasher>(
+    path: &str,
+    touched_paths: &HashSet<String, S>,
+) -> bool {
+    touched_paths.iter().any(|touched| {
+        touched == path
+            || path
+                .strip_prefix(touched)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+            || touched
+                .strip_prefix(path)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    })
+}
+
+fn build_unchanged(root: &Path, previous: &ReviewFile, path: &str) -> Result<ReviewFile> {
+    let bytes = read_worktree(root, path)?.unwrap_or_default();
+    let base_path = previous.old_path.as_deref().unwrap_or(&previous.path);
+    let old_path = (base_path != path).then(|| base_path.to_owned());
+    let mut file = review_file_from_bytes(
+        path.to_owned(),
+        FileStatus::Unchanged,
+        &bytes,
+        &bytes,
+        old_path,
+        vec!["No differences from the review base".to_owned()],
+    );
+    file.status = FileStatus::Unchanged;
+    Ok(file)
 }
 
 fn name_status(root: &Path, base: &str) -> Result<Vec<NameStatus>> {

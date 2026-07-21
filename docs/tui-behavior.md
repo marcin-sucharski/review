@@ -51,6 +51,7 @@ The status marker is bold and color-coded while the path keeps the normal tree f
 
 | Status | Marker | Color role |
 | --- | --- | --- |
+| Unchanged during live review | `=` | dark gray |
 | Modified | `M` | dark blue |
 | Added | `A` | dark green |
 | Deleted | `D` | dark red |
@@ -307,6 +308,14 @@ Each saved comment must show:
 - visual attachment to the selected code lines.
 
 The file pane should reflect files with comments, such as by showing a count.
+
+## Live File Refresh
+
+The TUI monitors the files present when the review opens. Unrelated files that become changed later are not added, while a reviewed file follows a Git-detected rename. Editor write bursts and atomic replacements are debounced before the diff is rebuilt against the base revision captured at startup.
+
+Comments match refreshed contiguous diff rows by exact line kind and text. Multiple matches choose the closest row and then the earlier row. Without a match, the range stays at its previous row or shifts upward just enough to fit. Empty and binary files retain comments as editable file-level entries; comments reattach when text returns. Physically deleting a reviewed file deletes its comments.
+
+Refreshing preserves the active comment edit where possible, remaps code selection, invalidates syntax highlighting for the changed path, and reports moved, detached, and deleted comment counts in the status row.
 
 ## Expansion Rows
 

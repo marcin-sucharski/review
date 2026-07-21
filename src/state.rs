@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::model::{ReviewComment, ReviewFile, ReviewLine, ReviewSource};
+use crate::model::{
+    CommentPlacement, ReviewComment, ReviewFile, ReviewLine, ReviewSource, VisibleInterval,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Expansion {
@@ -114,6 +116,13 @@ pub struct ReviewState {
     comment_counter: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RefreshOutcome {
+    pub moved_comments: usize,
+    pub detached_comments: usize,
+    pub deleted_comments: usize,
+}
+
 impl ReviewState {
     #[must_use]
     pub fn new(repository_root: &Path, source: ReviewSource, files: Vec<ReviewFile>) -> Self {
@@ -205,6 +214,11 @@ impl ReviewState {
                     &file.path,
                     format!("Binary file changed: {}", file.display_path()),
                 ));
+            }
+            for comment in comments.iter().filter(|comment| comment.is_file_level()) {
+                items.push(comment_item(file_index, &file.path, comment));
+            }
+            if file.binary {
                 continue;
             }
             let mut previous_end = None;
@@ -238,20 +252,10 @@ impl ReviewState {
                         expansion: None,
                         comment: None,
                     });
-                    for comment in comments
-                        .iter()
-                        .filter(|comment| comment.sorted_rows().1 == row_index)
-                    {
-                        items.push(DocumentItem {
-                            kind: DocumentKind::Comment,
-                            file_index,
-                            file_path: file.path.clone(),
-                            text: comment.body.clone(),
-                            row_index: None,
-                            line: None,
-                            expansion: None,
-                            comment: Some((*comment).clone()),
-                        });
+                    for comment in comments.iter().filter(|comment| {
+                        !comment.is_file_level() && comment.sorted_rows().1 == row_index
+                    }) {
+                        items.push(comment_item(file_index, &file.path, comment));
                     }
                 }
                 previous_end = Some(interval.end);
@@ -477,10 +481,12 @@ impl ReviewState {
         self.comments.push(ReviewComment {
             id,
             file_path,
-            start_row: start,
-            end_row: end,
+            placement: CommentPlacement::Lines {
+                start_row: start,
+                end_row: end,
+                selected_lines,
+            },
             body: body.to_owned(),
-            selected_lines,
             order: id,
         });
         Some(id)
@@ -507,7 +513,8 @@ impl ReviewState {
                 active_row,
                 ..
             } => self.comments.iter().find(|comment| {
-                comment.file_path == *file_path
+                !comment.is_file_level()
+                    && comment.file_path == *file_path
                     && comment.sorted_rows().0 <= *active_row
                     && *active_row <= comment.sorted_rows().1
             }),
@@ -541,15 +548,26 @@ impl ReviewState {
         if matches!(self.selection, Some(Selection::Comment { id: selected, .. }) if selected == id)
         {
             if let Some(comment) = deleted {
-                let row = comment.end_row.min(
+                let row = comment.sorted_rows().1.min(
                     self.file_by_path(&comment.file_path)
                         .map_or(0, |file| file.lines.len().saturating_sub(1)),
                 );
-                self.selection = Some(Selection::Code {
-                    file_path: comment.file_path.clone(),
-                    anchor_row: row,
-                    active_row: row,
-                });
+                self.selection = self.file_by_path(&comment.file_path).map_or_else(
+                    || None,
+                    |file| {
+                        if file.lines.is_empty() {
+                            Some(Selection::Metadata {
+                                file_path: comment.file_path.clone(),
+                            })
+                        } else {
+                            Some(Selection::Code {
+                                file_path: comment.file_path.clone(),
+                                anchor_row: row,
+                                active_row: row,
+                            })
+                        }
+                    },
+                );
                 if let Some(file_index) = self.file_index(&comment.file_path) {
                     self.file_pane_index = file_index;
                 }
@@ -558,6 +576,90 @@ impl ReviewState {
             }
         }
         true
+    }
+
+    pub fn replace_file(
+        &mut self,
+        old_path: &str,
+        replacement: Option<ReviewFile>,
+        physically_deleted: bool,
+    ) -> RefreshOutcome {
+        let Some(file_index) = self.file_index(old_path) else {
+            return RefreshOutcome::default();
+        };
+        let previous_file = self.files[file_index].clone();
+        let previous_selection = self.selection.clone();
+        let selected_signature = selected_signature(&previous_file, previous_selection.as_ref());
+        let mut outcome = RefreshOutcome::default();
+
+        if physically_deleted {
+            let before = self.comments.len();
+            self.comments
+                .retain(|comment| comment.file_path != old_path);
+            outcome.deleted_comments = before - self.comments.len();
+        }
+
+        let Some(mut replacement) = replacement else {
+            self.files.remove(file_index);
+            self.selection = None;
+            if self.files.is_empty() {
+                self.file_pane_index = 0;
+            } else {
+                self.file_pane_index = file_index.min(self.files.len() - 1);
+                self.initialize_selection();
+            }
+            return outcome;
+        };
+
+        let new_path = replacement.path.clone();
+        if !physically_deleted {
+            for comment in self
+                .comments
+                .iter_mut()
+                .filter(|comment| comment.file_path == old_path)
+            {
+                comment.file_path.clone_from(&new_path);
+                let old_rows = comment.sorted_rows();
+                if replacement.binary || replacement.lines.is_empty() {
+                    if !comment.is_file_level() {
+                        outcome.detached_comments += 1;
+                    }
+                    comment.placement = CommentPlacement::File {
+                        preferred_start_row: old_rows.0,
+                        preferred_end_row: old_rows.1,
+                        selected_lines: comment.selected_lines().to_vec(),
+                    };
+                    continue;
+                }
+                let (start, end, matched) =
+                    relocate_rows(comment.selected_lines(), old_rows, &replacement.lines);
+                if matched && (start, end) != old_rows {
+                    outcome.moved_comments += 1;
+                }
+                comment.placement = CommentPlacement::Lines {
+                    start_row: start,
+                    end_row: end,
+                    selected_lines: replacement.lines[start..=end].to_vec(),
+                };
+                replacement.add_visible_interval(start, end);
+            }
+        }
+
+        preserve_visible_intervals(&previous_file, &mut replacement);
+        self.files[file_index] = replacement;
+        self.file_pane_index = file_index;
+        self.selection = remap_selection(
+            previous_selection,
+            old_path,
+            &new_path,
+            &self.files[file_index],
+            selected_signature.as_deref(),
+            &self.comments,
+        );
+        if self.selection.is_none() {
+            self.initialize_selection();
+        }
+        outcome
     }
 
     #[must_use]
@@ -625,6 +727,132 @@ fn metadata_item(file_index: usize, file_path: &str, text: String) -> DocumentIt
         line: None,
         expansion: None,
         comment: None,
+    }
+}
+
+fn comment_item(file_index: usize, file_path: &str, comment: &ReviewComment) -> DocumentItem {
+    DocumentItem {
+        kind: DocumentKind::Comment,
+        file_index,
+        file_path: file_path.to_owned(),
+        text: comment.body.clone(),
+        row_index: None,
+        line: None,
+        expansion: None,
+        comment: Some(comment.clone()),
+    }
+}
+
+fn selected_signature(file: &ReviewFile, selection: Option<&Selection>) -> Option<Vec<ReviewLine>> {
+    let Selection::Code {
+        file_path,
+        anchor_row,
+        active_row,
+    } = selection?
+    else {
+        return None;
+    };
+    if file_path != &file.path {
+        return None;
+    }
+    let start = (*anchor_row).min(*active_row);
+    let end = (*anchor_row).max(*active_row);
+    file.lines.get(start..=end).map(<[ReviewLine]>::to_vec)
+}
+
+fn relocate_rows(
+    signature: &[ReviewLine],
+    previous: (usize, usize),
+    lines: &[ReviewLine],
+) -> (usize, usize, bool) {
+    if lines.is_empty() {
+        return (0, 0, false);
+    }
+    if !signature.is_empty() && signature.len() <= lines.len() {
+        let best = lines
+            .windows(signature.len())
+            .enumerate()
+            .filter(|(_, candidate)| {
+                candidate
+                    .iter()
+                    .zip(signature)
+                    .all(|(left, right)| left.kind == right.kind && left.text == right.text)
+            })
+            .min_by_key(|(start, _)| (start.abs_diff(previous.0), *start));
+        if let Some((start, _)) = best {
+            return (start, start + signature.len() - 1, true);
+        }
+    }
+    let requested_len = previous.1.saturating_sub(previous.0).saturating_add(1);
+    let len = requested_len.min(lines.len()).max(1);
+    let start = previous.0.min(lines.len() - len);
+    (start, start + len - 1, false)
+}
+
+fn preserve_visible_intervals(previous: &ReviewFile, replacement: &mut ReviewFile) {
+    if replacement.lines.is_empty() {
+        return;
+    }
+    for VisibleInterval { start, end } in &previous.visible_intervals {
+        replacement.add_visible_interval(*start, *end);
+    }
+}
+
+fn remap_selection(
+    selection: Option<Selection>,
+    old_path: &str,
+    new_path: &str,
+    file: &ReviewFile,
+    signature: Option<&[ReviewLine]>,
+    comments: &[ReviewComment],
+) -> Option<Selection> {
+    match selection? {
+        Selection::Comment { file_path, id } if file_path == old_path => comments
+            .iter()
+            .any(|comment| comment.id == id)
+            .then(|| Selection::Comment {
+                file_path: new_path.to_owned(),
+                id,
+            }),
+        Selection::Code {
+            file_path,
+            anchor_row,
+            active_row,
+        } if file_path == old_path => {
+            if file.lines.is_empty() {
+                return Some(Selection::Metadata {
+                    file_path: new_path.to_owned(),
+                });
+            }
+            let previous = (anchor_row.min(active_row), anchor_row.max(active_row));
+            let (start, end, _) =
+                relocate_rows(signature.unwrap_or_default(), previous, &file.lines);
+            Some(Selection::Code {
+                file_path: new_path.to_owned(),
+                anchor_row: start,
+                active_row: end,
+            })
+        }
+        Selection::Metadata { file_path } if file_path == old_path => Some(Selection::Metadata {
+            file_path: new_path.to_owned(),
+        }),
+        Selection::Expansion { file_path, .. } if file_path == old_path => {
+            file.first_visible_row().map_or_else(
+                || {
+                    Some(Selection::Metadata {
+                        file_path: new_path.to_owned(),
+                    })
+                },
+                |row| {
+                    Some(Selection::Code {
+                        file_path: new_path.to_owned(),
+                        anchor_row: row,
+                        active_row: row,
+                    })
+                },
+            )
+        }
+        other => Some(other),
     }
 }
 
@@ -706,6 +934,30 @@ mod tests {
                 kind: ReviewKind::Uncommitted,
                 target_branch: None,
                 base_ref: "HEAD".into(),
+            },
+            vec![file],
+        )
+    }
+
+    fn state_with_added_lines(values: &[&str]) -> ReviewState {
+        let file = create_review_file(
+            "src/a.rs".into(),
+            FileStatus::Added,
+            &[],
+            &values
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>(),
+            None,
+            false,
+            vec![],
+        );
+        ReviewState::new(
+            Path::new("/tmp/repo"),
+            ReviewSource {
+                kind: ReviewKind::Uncommitted,
+                target_branch: None,
+                base_ref: "base".into(),
             },
             vec![file],
         )
@@ -910,5 +1162,192 @@ mod tests {
         state.expand_context(&expansion.id);
         let after = &state.file_by_path("src/a.rs").unwrap().visible_intervals;
         assert_ne!(&before, after);
+    }
+
+    #[test]
+    fn refresh_moves_comment_to_nearest_exact_multiline_match() {
+        let mut state = state_with_added_lines(&["zero", "target", "second", "tail"]);
+        state.selection = Some(Selection::Code {
+            file_path: "src/a.rs".into(),
+            anchor_row: 1,
+            active_row: 2,
+        });
+        let id = state.add_comment("move me").unwrap();
+        let replacement = create_review_file(
+            "src/a.rs".into(),
+            FileStatus::Added,
+            &[],
+            &[
+                "before".into(),
+                "zero".into(),
+                "target".into(),
+                "second".into(),
+                "tail".into(),
+            ],
+            None,
+            false,
+            vec![],
+        );
+
+        let outcome = state.replace_file("src/a.rs", Some(replacement), false);
+
+        assert_eq!(outcome.moved_comments, 1);
+        let comment = state
+            .comments
+            .iter()
+            .find(|comment| comment.id == id)
+            .unwrap();
+        assert_eq!(comment.sorted_rows(), (2, 3));
+        assert_eq!(
+            comment
+                .selected_lines()
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["target", "second"]
+        );
+    }
+
+    #[test]
+    fn refresh_duplicate_match_prefers_nearest_then_earlier() {
+        let mut state = state_with_added_lines(&["a", "b", "x", "target", "y"]);
+        state.selection = Some(Selection::Code {
+            file_path: "src/a.rs".into(),
+            anchor_row: 3,
+            active_row: 3,
+        });
+        state.add_comment("tie").unwrap();
+        let replacement = create_review_file(
+            "src/a.rs".into(),
+            FileStatus::Added,
+            &[],
+            &[
+                "a".into(),
+                "target".into(),
+                "x".into(),
+                "y".into(),
+                "z".into(),
+                "target".into(),
+            ],
+            None,
+            false,
+            vec![],
+        );
+
+        state.replace_file("src/a.rs", Some(replacement), false);
+
+        assert_eq!(state.comments[0].sorted_rows(), (1, 1));
+    }
+
+    #[test]
+    fn refresh_without_match_clamps_range_up_and_preserves_length() {
+        let mut state = state_with_added_lines(&["a", "b", "c", "d", "e", "f"]);
+        state.selection = Some(Selection::Code {
+            file_path: "src/a.rs".into(),
+            anchor_row: 4,
+            active_row: 5,
+        });
+        state.add_comment("clamp").unwrap();
+        let replacement = create_review_file(
+            "src/a.rs".into(),
+            FileStatus::Added,
+            &[],
+            &["one".into(), "two".into(), "three".into()],
+            None,
+            false,
+            vec![],
+        );
+
+        state.replace_file("src/a.rs", Some(replacement), false);
+
+        assert_eq!(state.comments[0].sorted_rows(), (1, 2));
+    }
+
+    #[test]
+    fn empty_refresh_detaches_comment_and_text_refresh_restores_it() {
+        let mut state = state_with_added_lines(&["first", "target", "last"]);
+        state.selection = Some(Selection::Code {
+            file_path: "src/a.rs".into(),
+            anchor_row: 1,
+            active_row: 1,
+        });
+        let id = state.add_comment("survive empty").unwrap();
+        let empty = create_review_file(
+            "src/a.rs".into(),
+            FileStatus::Unchanged,
+            &[],
+            &[],
+            None,
+            false,
+            vec![],
+        );
+
+        let detached = state.replace_file("src/a.rs", Some(empty), false);
+        assert_eq!(detached.detached_comments, 1);
+        assert!(state.comments[0].is_file_level());
+        assert!(state.document_items().iter().any(|item| {
+            item.comment
+                .as_ref()
+                .is_some_and(|comment| comment.id == id)
+        }));
+
+        let restored = create_review_file(
+            "src/a.rs".into(),
+            FileStatus::Added,
+            &[],
+            &["new".into(), "target".into()],
+            None,
+            false,
+            vec![],
+        );
+        state.replace_file("src/a.rs", Some(restored), false);
+        assert!(!state.comments[0].is_file_level());
+        assert_eq!(state.comments[0].sorted_rows(), (1, 1));
+    }
+
+    #[test]
+    fn physical_deletion_removes_comments_but_keeps_tracked_deleted_diff() {
+        let mut state = state_with_added_lines(&["target"]);
+        state.add_comment("remove me").unwrap();
+        let deleted = create_review_file(
+            "src/a.rs".into(),
+            FileStatus::Deleted,
+            &["base".into()],
+            &[],
+            None,
+            false,
+            vec![],
+        );
+
+        let outcome = state.replace_file("src/a.rs", Some(deleted), true);
+
+        assert_eq!(outcome.deleted_comments, 1);
+        assert!(state.comments.is_empty());
+        assert_eq!(state.files[0].status, FileStatus::Deleted);
+    }
+
+    #[test]
+    fn refresh_follows_rename_for_comment_and_selection() {
+        let mut state = state_with_added_lines(&["target"]);
+        let id = state.add_comment("rename").unwrap();
+        state.select_comment(id).unwrap();
+        let renamed = create_review_file(
+            "src/b.rs".into(),
+            FileStatus::Renamed,
+            &[],
+            &["target".into()],
+            Some("src/a.rs".into()),
+            false,
+            vec![],
+        );
+
+        state.replace_file("src/a.rs", Some(renamed), false);
+
+        assert_eq!(state.comments[0].file_path, "src/b.rs");
+        assert!(matches!(
+            state.selection,
+            Some(Selection::Comment { ref file_path, id: selected })
+                if file_path == "src/b.rs" && selected == id
+        ));
     }
 }

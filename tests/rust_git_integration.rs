@@ -1,10 +1,11 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use review::git::{collect_branch_comparison, collect_uncommitted};
+use review::git::{collect_branch_comparison, collect_uncommitted, refresh_reviewed_files};
 use review::model::{FileStatus, LineKind};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -309,4 +310,121 @@ fn worktree_symlink_is_read_as_target_without_dereferencing() {
     let link = files.iter().find(|file| file.path == "link").unwrap();
     assert!(link.lines.iter().any(|line| line.text == "second.txt"));
     assert!(!link.lines.iter().any(|line| line.text.contains("secret")));
+}
+
+#[test]
+fn refresh_reloads_reverts_and_deletes_against_the_frozen_base() {
+    let repo = TempRepo::new();
+    repo.write("watched.txt", "base\nsecond\n");
+    repo.commit_all("base");
+    repo.write("watched.txt", "changed\nsecond\n");
+    let (source, files) = collect_uncommitted(repo.path()).unwrap();
+    assert_ne!(source.base_ref, "HEAD");
+    let touched = HashSet::from(["watched.txt".to_owned()]);
+
+    repo.write("watched.txt", "changed again\nsecond\n");
+    let refreshed = refresh_reviewed_files(repo.path(), &source, &files, &touched, false).unwrap();
+    assert!(
+        refreshed[0]
+            .file
+            .as_ref()
+            .unwrap()
+            .lines
+            .iter()
+            .any(|line| line.text == "changed again")
+    );
+    assert!(!refreshed[0].physically_deleted);
+
+    repo.write("watched.txt", "base\nsecond\n");
+    let unchanged = refresh_reviewed_files(repo.path(), &source, &files, &touched, false).unwrap();
+    assert_eq!(
+        unchanged[0].file.as_ref().unwrap().status,
+        FileStatus::Unchanged
+    );
+
+    fs::remove_file(repo.path().join("watched.txt")).unwrap();
+    let deleted = refresh_reviewed_files(repo.path(), &source, &files, &touched, false).unwrap();
+    assert!(deleted[0].physically_deleted);
+    assert_eq!(
+        deleted[0].file.as_ref().unwrap().status,
+        FileStatus::Deleted
+    );
+}
+
+#[test]
+fn refresh_follows_tracked_and_untracked_renames_but_ignores_unrelated_files() {
+    let repo = TempRepo::new();
+    repo.write("tracked.txt", "base\nsecond\nthird\n");
+    repo.commit_all("base");
+    repo.write("tracked.txt", "changed\nsecond\nthird\n");
+    repo.write("added.txt", "new\n");
+    let (source, files) = collect_uncommitted(repo.path()).unwrap();
+
+    repo.git(&["mv", "tracked.txt", "renamed.txt"]);
+    fs::rename(repo.path().join("added.txt"), repo.path().join("moved.txt")).unwrap();
+    repo.write("unrelated.txt", "ignore\n");
+    let touched = HashSet::from([
+        "tracked.txt".to_owned(),
+        "renamed.txt".to_owned(),
+        "added.txt".to_owned(),
+        "moved.txt".to_owned(),
+    ]);
+
+    let refreshed = refresh_reviewed_files(repo.path(), &source, &files, &touched, false).unwrap();
+    let paths = refreshed
+        .iter()
+        .filter_map(|refresh| refresh.file.as_ref().map(|file| file.path.as_str()))
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"renamed.txt"));
+    assert!(paths.contains(&"moved.txt"));
+    assert!(!paths.contains(&"unrelated.txt"));
+
+    let renamed = refreshed
+        .iter()
+        .find_map(|refresh| {
+            refresh
+                .file
+                .as_ref()
+                .filter(|file| file.path == "renamed.txt")
+        })
+        .unwrap()
+        .clone();
+    repo.git(&["mv", "renamed.txt", "tracked.txt"]);
+    repo.write("tracked.txt", "base\nsecond\nthird\n");
+    let reverted = refresh_reviewed_files(
+        repo.path(),
+        &source,
+        &[renamed],
+        &HashSet::from(["renamed.txt".to_owned(), "tracked.txt".to_owned()]),
+        false,
+    )
+    .unwrap();
+    assert_eq!(reverted[0].file.as_ref().unwrap().path, "tracked.txt");
+    assert_eq!(
+        reverted[0].file.as_ref().unwrap().status,
+        FileStatus::Unchanged
+    );
+    assert!(!reverted[0].physically_deleted);
+}
+
+#[test]
+fn deleting_an_added_reviewed_file_yields_no_replacement() {
+    let repo = TempRepo::new();
+    repo.write("base.txt", "base\n");
+    repo.commit_all("base");
+    repo.write("added.txt", "new\n");
+    let (source, files) = collect_uncommitted(repo.path()).unwrap();
+    fs::remove_file(repo.path().join("added.txt")).unwrap();
+
+    let refreshed = refresh_reviewed_files(
+        repo.path(),
+        &source,
+        &files,
+        &HashSet::from(["added.txt".to_owned()]),
+        false,
+    )
+    .unwrap();
+
+    assert!(refreshed[0].physically_deleted);
+    assert!(refreshed[0].file.is_none());
 }

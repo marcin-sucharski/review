@@ -7,3 +7,4 @@ Current limitations are:
 - Git paths are represented as UTF-8 strings. Spaces, tabs, newlines, and Unicode names are supported, but filenames containing invalid UTF-8 bytes are not preserved losslessly.
 - Binary files and Git links are represented by change metadata rather than inline content.
 - Draft or interrupted review sessions are not persisted; only completed reviews with at least one saved comment are archived.
+- Live monitoring is limited to files present when the TUI opens, except that Git-detected renames are followed. Newly changed unrelated files require a new review session.

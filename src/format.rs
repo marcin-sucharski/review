@@ -59,7 +59,7 @@ fn format_markdown(state: &ReviewState) -> String {
         }
         let _ = writeln!(output, "### File: {}\n", file.display_path());
         for comment in comments {
-            let reference = line_reference(&comment.selected_lines);
+            let reference = comment_reference(comment);
             let _ = writeln!(output, "{}", reference.label);
             let context = comment_context_lines(file, comment, 2)
                 .into_iter()
@@ -128,7 +128,7 @@ fn format_xml(state: &ReviewState) -> String {
         }
         output.push_str(">\n");
         for comment in comments {
-            let reference = line_reference(&comment.selected_lines);
+            let reference = comment_reference(comment);
             let _ = writeln!(output, "      <review_comment id=\"c{}\">", comment.id);
             output.push_str("        <location>\n");
             let _ = writeln!(
@@ -212,6 +212,16 @@ fn line_reference(lines: &[ReviewLine]) -> LineReference {
     }
 }
 
+fn comment_reference(comment: &ReviewComment) -> LineReference {
+    if comment.is_file_level() {
+        return LineReference {
+            label: "File-level comment".to_owned(),
+            attributes: "side=\"file\"".to_owned(),
+        };
+    }
+    line_reference(comment.selected_lines())
+}
+
 fn min_max(numbers: &[usize]) -> (usize, usize) {
     let start = numbers.iter().copied().min().unwrap_or_default();
     let end = numbers.iter().copied().max().unwrap_or_default();
@@ -232,6 +242,9 @@ fn comment_context_lines<'a>(
     radius: usize,
 ) -> Vec<&'a ReviewLine> {
     if file.lines.is_empty() {
+        return Vec::new();
+    }
+    if comment.is_file_level() {
         return Vec::new();
     }
     let (start, end) = comment.sorted_rows();
@@ -372,5 +385,27 @@ mod tests {
                     .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
             );
         }
+    }
+
+    #[test]
+    fn file_level_comments_have_explicit_locations_without_stale_context() {
+        let mut state = commented_state("survives binary");
+        let binary = create_review_file(
+            "a.py".into(),
+            FileStatus::Binary,
+            &[],
+            &[],
+            None,
+            true,
+            vec![],
+        );
+        state.replace_file("a.py", Some(binary), false);
+
+        let markdown = format_review(&state, OutputFormat::Markdown);
+        assert!(markdown.contains("File-level comment"));
+        assert!(!markdown.contains("new```"));
+        let xml = format_review(&state, OutputFormat::Xml);
+        assert!(xml.contains("side=\"file\""));
+        assert!(xml.contains("<context radius=\"2\"><![CDATA[]]></context>"));
     }
 }
