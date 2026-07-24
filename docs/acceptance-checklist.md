@@ -147,6 +147,8 @@ Use this checklist to decide whether the initial implementation is complete.
 - [ ] Expand-down rows appear when hidden context exists below.
 - [ ] `Enter` on expand-up reveals up to 20 lines above.
 - [ ] `Enter` on expand-down reveals up to 20 lines below.
+- [ ] Large internal gaps show both expand-down and expand-up rows.
+- [ ] Internal gaps of 20 lines or fewer show one reveal-all row.
 - [ ] Exhausted expansion rows disappear.
 - [ ] Expansion preserves selection and comments where possible.
 

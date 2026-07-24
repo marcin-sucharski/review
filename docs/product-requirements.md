@@ -220,6 +220,8 @@ Expansion row examples:
 
 When selected and activated with `Enter` or mouse click, the row expands up to 20 hidden lines in the corresponding direction.
 
+An internal hidden region larger than 20 lines must expose two expansion rows: one reveals lines downward from the preceding visible block and one reveals lines upward from the following visible block. Regions of 20 lines or fewer use a single expansion row because one activation reveals the entire region.
+
 Expansion must preserve comments, selection, scroll position as much as practical, and file synchronization.
 
 ## Quit Flow

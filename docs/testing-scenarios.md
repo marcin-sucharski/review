@@ -130,7 +130,8 @@ Fixture files should cover required languages:
 | Expansion row exhausted | Row disappears |
 | Comments exist below expansion | Comments remain attached to original lines |
 | Selection exists during expansion | Selection is preserved when possible |
-| Multi-hunk file has hidden middle context | Middle expansion row expands correctly |
+| Multi-hunk file has more than 20 hidden middle lines | Separate expand-down and expand-up rows appear |
+| Multi-hunk file has at most 20 hidden middle lines | One expansion row reveals the whole gap |
 
 ## Syntax Highlighting Tests
 

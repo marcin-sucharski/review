@@ -325,7 +325,7 @@ Expansion rows are part of the review pane and can be selected.
 
 They are displayed when hidden context exists above or below the current visible block.
 
-Activating an expansion row reveals up to 20 more lines in that direction.
+Activating an expansion row reveals up to 20 more lines in that direction. An internal hidden gap that needs more than one activation displays two rows: one expands downward from the visible block above, and one expands upward from the visible block below. A gap that fits in one activation displays only one row that reveals all remaining lines.
 
 When fewer than 20 lines remain, the label should say or imply that all remaining lines will be shown.
 

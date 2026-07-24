@@ -4,6 +4,8 @@ use crate::model::{
     CommentPlacement, ReviewComment, ReviewFile, ReviewLine, ReviewSource, VisibleInterval,
 };
 
+const EXPANSION_LINES: usize = 20;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Expansion {
     pub id: String,
@@ -225,18 +227,33 @@ impl ReviewState {
             for (interval_index, interval) in file.visible_intervals.iter().enumerate() {
                 let gap_start = previous_end.map_or(0, |end| end + 1);
                 if interval.start > gap_start {
-                    let direction = if interval_index == 0 {
-                        ExpansionDirection::Above
+                    let gap_end = interval.start - 1;
+                    if interval_index == 0 {
+                        items.push(expansion_item(
+                            file_index,
+                            &file.path,
+                            ExpansionDirection::Above,
+                            gap_start,
+                            gap_end,
+                        ));
                     } else {
-                        ExpansionDirection::Below
-                    };
-                    items.push(expansion_item(
-                        file_index,
-                        &file.path,
-                        direction,
-                        gap_start,
-                        interval.start - 1,
-                    ));
+                        items.push(expansion_item(
+                            file_index,
+                            &file.path,
+                            ExpansionDirection::Below,
+                            gap_start,
+                            gap_end,
+                        ));
+                        if gap_end - gap_start + 1 > EXPANSION_LINES {
+                            items.push(expansion_item(
+                                file_index,
+                                &file.path,
+                                ExpansionDirection::Above,
+                                gap_start,
+                                gap_end,
+                            ));
+                        }
+                    }
                 }
                 for row_index in
                     interval.start..=interval.end.min(file.lines.len().saturating_sub(1))
@@ -864,8 +881,14 @@ fn expansion_item(
     gap_end: usize,
 ) -> DocumentItem {
     let (reveal_start, reveal_end) = match direction {
-        ExpansionDirection::Above => (gap_end.saturating_sub(19).max(gap_start), gap_end),
-        ExpansionDirection::Below => (gap_start, gap_start.saturating_add(19).min(gap_end)),
+        ExpansionDirection::Above => (
+            gap_end.saturating_sub(EXPANSION_LINES - 1).max(gap_start),
+            gap_end,
+        ),
+        ExpansionDirection::Below => (
+            gap_start,
+            gap_start.saturating_add(EXPANSION_LINES - 1).min(gap_end),
+        ),
     };
     let direction_name = match direction {
         ExpansionDirection::Above => "above",
@@ -1162,6 +1185,129 @@ mod tests {
         state.expand_context(&expansion.id);
         let after = &state.file_by_path("src/a.rs").unwrap().visible_intervals;
         assert_ne!(&before, after);
+    }
+
+    #[test]
+    fn large_middle_gap_can_expand_from_both_ends() {
+        let mut state = state_with_lines(300);
+        state.files[0].visible_intervals = vec![
+            VisibleInterval { start: 0, end: 19 },
+            VisibleInterval { start: 80, end: 99 },
+        ];
+
+        let expansions = state
+            .document_items()
+            .into_iter()
+            .filter_map(|item| item.expansion)
+            .filter(|expansion| expansion.gap_start == 20 && expansion.gap_end == 79)
+            .collect::<Vec<_>>();
+
+        assert_eq!(expansions.len(), 2);
+        assert_eq!(expansions[0].direction, ExpansionDirection::Below);
+        assert_eq!(
+            (expansions[0].reveal_start, expansions[0].reveal_end),
+            (20, 39)
+        );
+        assert_eq!(expansions[1].direction, ExpansionDirection::Above);
+        assert_eq!(
+            (expansions[1].reveal_start, expansions[1].reveal_end),
+            (60, 79)
+        );
+        assert_eq!(expansions[0].label(), "Show 20 lines below");
+        assert_eq!(expansions[1].label(), "Show 20 lines above");
+
+        state.expand_context(&expansions[0].id);
+        assert_eq!(
+            state.files[0].visible_intervals,
+            vec![
+                VisibleInterval { start: 0, end: 39 },
+                VisibleInterval { start: 80, end: 99 },
+            ]
+        );
+        let expand_below_again = state
+            .document_items()
+            .into_iter()
+            .filter_map(|item| item.expansion)
+            .find(|expansion| {
+                expansion.gap_start == 40
+                    && expansion.gap_end == 79
+                    && expansion.direction == ExpansionDirection::Below
+            })
+            .unwrap();
+        state.expand_context(&expand_below_again.id);
+        assert_eq!(
+            state.files[0].visible_intervals,
+            vec![
+                VisibleInterval { start: 0, end: 59 },
+                VisibleInterval { start: 80, end: 99 },
+            ]
+        );
+
+        let mut state = state_with_lines(300);
+        state.files[0].visible_intervals = vec![
+            VisibleInterval { start: 0, end: 19 },
+            VisibleInterval { start: 80, end: 99 },
+        ];
+        let expand_above = state
+            .document_items()
+            .into_iter()
+            .filter_map(|item| item.expansion)
+            .find(|expansion| {
+                expansion.gap_start == 20
+                    && expansion.gap_end == 79
+                    && expansion.direction == ExpansionDirection::Above
+            })
+            .unwrap();
+        state.expand_context(&expand_above.id);
+        assert_eq!(
+            state.files[0].visible_intervals,
+            vec![
+                VisibleInterval { start: 0, end: 19 },
+                VisibleInterval { start: 60, end: 99 },
+            ]
+        );
+        let expand_above_again = state
+            .document_items()
+            .into_iter()
+            .filter_map(|item| item.expansion)
+            .find(|expansion| {
+                expansion.gap_start == 20
+                    && expansion.gap_end == 59
+                    && expansion.direction == ExpansionDirection::Above
+            })
+            .unwrap();
+        state.expand_context(&expand_above_again.id);
+        assert_eq!(
+            state.files[0].visible_intervals,
+            vec![
+                VisibleInterval { start: 0, end: 19 },
+                VisibleInterval { start: 40, end: 99 },
+            ]
+        );
+    }
+
+    #[test]
+    fn small_middle_gap_has_one_show_all_expansion() {
+        let mut state = state_with_lines(300);
+        state.files[0].visible_intervals = vec![
+            VisibleInterval { start: 0, end: 19 },
+            VisibleInterval { start: 35, end: 49 },
+        ];
+
+        let expansions = state
+            .document_items()
+            .into_iter()
+            .filter_map(|item| item.expansion)
+            .filter(|expansion| expansion.gap_start == 20 && expansion.gap_end == 34)
+            .collect::<Vec<_>>();
+
+        assert_eq!(expansions.len(), 1);
+        assert_eq!(expansions[0].direction, ExpansionDirection::Below);
+        assert_eq!(expansions[0].label(), "Show 15 remaining lines below");
+        assert_eq!(
+            (expansions[0].reveal_start, expansions[0].reveal_end),
+            (20, 34)
+        );
     }
 
     #[test]
