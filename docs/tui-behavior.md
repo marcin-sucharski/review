@@ -281,6 +281,8 @@ For a single line, the input appears below that line.
 
 For a multi-line range, the input appears below the last selected line.
 
+Opening a new comment or editing a saved comment must preserve the current review viewport. While typing, the viewport may move only by the minimum amount needed to keep the editor cursor visible; it must not place the commented line at the top automatically.
+
 The comment block should include a compact left-side marker showing the range. The vertical marker appears between the line number and the change marker, and continues into the comment body. Example:
 
 ```text

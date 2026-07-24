@@ -1447,7 +1447,6 @@ impl<'a> ReviewApp<'a> {
         self.comment_goal_column = None;
         self.comment_editor_scroll = 0;
         self.editing_comment_id = None;
-        self.position_comment_editor();
     }
 
     fn start_edit_comment(&mut self, id: u64) {
@@ -1461,7 +1460,6 @@ impl<'a> ReviewApp<'a> {
         self.comment_goal_column = None;
         self.comment_editor_scroll = 0;
         self.editing_comment_id = Some(id);
-        self.position_comment_editor();
     }
 
     fn handle_comment_key(&mut self, key: KeyEvent) {
@@ -1649,8 +1647,45 @@ impl<'a> ReviewApp<'a> {
     }
 
     fn position_comment_editor(&mut self) {
-        if let Some(active) = self.state.active_document_index() {
-            self.review_scroll = active;
+        let items = self.state.document_items();
+        let attachment = if self.editing_comment_id.is_some() {
+            self.state.active_document_index()
+        } else {
+            let Some((file_path, _, end)) = self.state.selected_range() else {
+                return;
+            };
+            items.iter().position(|item| {
+                item.kind == DocumentKind::Code
+                    && item.file_path == file_path
+                    && item.row_index == Some(end)
+            })
+        };
+        let Some(attachment) = attachment else {
+            return;
+        };
+        if self.review_scroll > attachment {
+            self.review_scroll = attachment;
+            return;
+        }
+        let required_rows = if self.editing_comment_id.is_some() {
+            1
+        } else {
+            let selected = self.state.item_is_selected(&items[attachment]);
+            self.review_item_lines(&items[attachment], self.current_review_width(), selected)
+                .0
+                .len()
+                .saturating_add(1)
+        };
+        while self.review_scroll < attachment {
+            let visible_attachment_rows = self
+                .layout_visible_indices(self.review_scroll, &items)
+                .into_iter()
+                .filter(|index| *index == attachment)
+                .count();
+            if visible_attachment_rows >= required_rows {
+                break;
+            }
+            self.review_scroll += 1;
         }
     }
 
@@ -2851,6 +2886,52 @@ mod tests {
         app.start_new_comment();
         app.handle_event(Event::Paste("first\nsecond".into()));
         assert_eq!(app.comment_buffer, "first\nsecond");
+    }
+
+    #[test]
+    fn opening_and_typing_a_comment_preserves_a_contextual_viewport() {
+        let mut state = state_with_visible_lines(60);
+        state.selection = Some(Selection::Code {
+            file_path: "src/a.rs".into(),
+            anchor_row: 25,
+            active_row: 25,
+        });
+        let mut app = ReviewApp::new(&mut state);
+        app.last_width = 100;
+        app.last_height = 20;
+        let active = app.state.active_document_index().unwrap();
+        app.review_scroll = active.saturating_sub(6);
+        let contextual_scroll = app.review_scroll;
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.comment_mode);
+        assert_eq!(app.review_scroll, contextual_scroll);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.review_scroll, contextual_scroll);
+    }
+
+    #[test]
+    fn typing_scrolls_only_enough_to_reveal_an_offscreen_comment_editor() {
+        let mut state = state_with_visible_lines(60);
+        state.selection = Some(Selection::Code {
+            file_path: "src/a.rs".into(),
+            anchor_row: 25,
+            active_row: 25,
+        });
+        let mut app = ReviewApp::new(&mut state);
+        app.last_width = 100;
+        app.last_height = 10;
+        let active = app.state.active_document_index().unwrap();
+        app.review_scroll = active.saturating_sub(8);
+        let contextual_scroll = app.review_scroll;
+
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.review_scroll, contextual_scroll);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(app.review_scroll > contextual_scroll);
+        assert!(app.review_scroll < active);
     }
 
     #[test]

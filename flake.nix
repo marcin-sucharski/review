@@ -29,7 +29,7 @@
         rec {
           review = pkgs.rustPlatform.buildRustPackage {
             pname = "review";
-            version = "0.2.0";
+            version = "0.2.1";
             src = lib.fileset.toSource {
               root = ./.;
               fileset = lib.fileset.unions [

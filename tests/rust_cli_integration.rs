@@ -78,7 +78,7 @@ fn help_and_version_do_not_require_a_repository() {
         .output()
         .unwrap();
     assert!(version.status.success());
-    assert_eq!(String::from_utf8(version.stdout).unwrap(), "review 0.2.0\n");
+    assert_eq!(String::from_utf8(version.stdout).unwrap(), "review 0.2.1\n");
 }
 
 #[test]
