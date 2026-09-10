@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Write};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
@@ -76,7 +76,8 @@ pub fn select_option_to(
     let mut previous_frame = MenuFrame::default();
     let mut cancel_armed = false;
     loop {
-        let lines = render_option_lines(title, options, selected, cancel_armed);
+        let (width, height) = size().unwrap_or((80, 24));
+        let lines = render_option_lines(title, options, selected, cancel_armed, width, height);
         previous_frame = replace_menu(&mut output, &previous_frame, &lines)?;
         let Event::Key(key) =
             event::read().map_err(|error| ReviewError::io("could not read menu input", error))?
@@ -116,6 +117,67 @@ pub fn select_option_to(
                 }
             }
             MenuKey::Other => cancel_armed = false,
+        }
+    }
+}
+
+pub fn prompt_positive_count(title: &str) -> Result<usize> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        println!("{title}:");
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|error| ReviewError::io("could not read commit count", error))?;
+        return input
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|count| *count > 0)
+            .ok_or_else(|| {
+                ReviewError::InvalidArgument("commit count must be a positive integer".to_owned())
+            });
+    }
+    let _raw = RawMode::enter()?;
+    let mut output = io::stdout().lock();
+    let mut frame = MenuFrame::default();
+    let mut input = String::new();
+    loop {
+        frame = replace_menu(
+            &mut output,
+            &frame,
+            &[
+                format!("{title}: {input}"),
+                "Enter: review · Esc/Ctrl+C: cancel".to_owned(),
+            ],
+        )?;
+        let Event::Key(key) =
+            event::read().map_err(|error| ReviewError::io("could not read count", error))?
+        else {
+            continue;
+        };
+        if !actionable_menu_key_event(key) {
+            continue;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                clear_menu(&mut output, &frame)?;
+                return Err(ReviewError::Cancelled);
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                clear_menu(&mut output, &frame)?;
+                return Err(ReviewError::Cancelled);
+            }
+            KeyCode::Char(digit) if digit.is_ascii_digit() => input.push(digit),
+            KeyCode::Backspace => {
+                input.pop();
+            }
+            KeyCode::Enter => {
+                if let Some(count) = input.parse::<usize>().ok().filter(|count| *count > 0) {
+                    clear_menu(&mut output, &frame)?;
+                    return Ok(count);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -239,7 +301,7 @@ fn select_option_text(title: &str, options: &[MenuOption], stderr: bool) -> Resu
         .map_err(|error| ReviewError::io("could not render menu", error))?;
     let mut choice = String::new();
     io::stdin()
-        .read_to_string(&mut choice)
+        .read_line(&mut choice)
         .map_err(|error| ReviewError::io("could not read menu input", error))?;
     let choice = choice.lines().next().unwrap_or_default().trim();
     if choice.is_empty() {
@@ -337,19 +399,67 @@ fn render_option_lines(
     options: &[MenuOption],
     selected: usize,
     cancel_armed: bool,
+    width: u16,
+    height: u16,
 ) -> Vec<String> {
-    let mut lines = vec![format!("{title}  (Use Up/Down and Enter; q/Esc cancels)")];
-    for (index, option) in options.iter().enumerate() {
-        let prefix = if index == selected { '>' } else { ' ' };
-        let detail = if option.detail.is_empty() {
-            String::new()
-        } else {
-            format!(" - {}", option.detail)
-        };
-        lines.push(format!("{prefix} {}{detail}", option.label));
+    let width = usize::from(width.saturating_sub(1).max(1));
+    // Keep the cursor's trailing newline on screen, so repainting can reach every row.
+    let height = usize::from(height.saturating_sub(1).max(1));
+    let title = wrap_menu_line(
+        &format!("{title}  (Use Up/Down and Enter; q/Esc cancels)"),
+        width,
+    )
+    .remove(0);
+    let reserved = 2 + usize::from(cancel_armed);
+    let budget = height.saturating_sub(reserved).max(1);
+    let rows = options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| {
+            let prefix = if index == selected { '>' } else { ' ' };
+            let detail = if option.detail.is_empty() {
+                String::new()
+            } else {
+                format!(" - {}", option.detail)
+            };
+            let mut rows = wrap_menu_line(&format!("{prefix} {}{detail}", option.label), width);
+            rows.truncate(budget);
+            rows
+        })
+        .collect::<Vec<_>>();
+    let mut start = selected;
+    let mut end = selected + 1;
+    let mut used = rows[selected].len();
+    while start > 0 && used + rows[start - 1].len() <= budget {
+        start -= 1;
+        used += rows[start].len();
     }
-    if cancel_armed {
-        lines.push("Press Ctrl+C again to cancel.".to_owned());
+    while end < rows.len() && used + rows[end].len() <= budget {
+        used += rows[end].len();
+        end += 1;
+    }
+    let mut lines = Vec::new();
+    if height > reserved {
+        lines.push(title);
+    }
+    lines.extend(rows[start..end].iter().flatten().cloned());
+    if lines.len() < height {
+        lines.push(
+            wrap_menu_line(
+                &format!(
+                    "{}/{} · {} above · {} below",
+                    selected + 1,
+                    options.len(),
+                    start,
+                    options.len() - end
+                ),
+                width,
+            )
+            .remove(0),
+        );
+    }
+    if cancel_armed && lines.len() < height {
+        lines.push(wrap_menu_line("Press Ctrl+C again to cancel.", width).remove(0));
     }
     lines
 }
@@ -550,8 +660,41 @@ mod tests {
             MenuOption::new("Review PR-style changes", "branch"),
             MenuOption::new("Review uncommitted changes", "uncommitted"),
         ];
-        let lines = render_option_lines("Review source", &options, 0, false);
+        let lines = render_option_lines("Review source", &options, 0, false, 80, 24);
         assert!(lines[1].starts_with("> Review PR-style"));
+    }
+
+    #[test]
+    fn option_menu_keeps_selection_visible_with_wrapped_labels_and_small_panes() {
+        let options = (0..20)
+            .map(|index| {
+                MenuOption::new(
+                    format!("commit {index:02} {}", "long subject ".repeat(8)),
+                    "",
+                )
+            })
+            .collect::<Vec<_>>();
+        for height in [2, 4, 16, 24] {
+            for selected in [0, 1, 10, 19] {
+                for armed in [false, true] {
+                    let lines = render_option_lines(
+                        "Recent commits",
+                        &options,
+                        selected,
+                        armed,
+                        40,
+                        height,
+                    );
+                    assert!(lines.len() < usize::from(height));
+                    assert!(lines.iter().all(|line| line.width() <= 39));
+                    assert!(
+                        lines
+                            .iter()
+                            .any(|line| line.starts_with(&format!("> commit {selected:02}")))
+                    );
+                }
+            }
+        }
     }
 
     #[test]

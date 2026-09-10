@@ -276,9 +276,11 @@ impl<'a> ReviewApp<'a> {
         }
         let mut output = io::stdout();
         let _guard = TerminalGuard::enter(&mut output)?;
-        match FileMonitor::new(&self.state.repository_root) {
-            Ok(monitor) => self.monitor = Some(monitor),
-            Err(error) => self.status = format!("Monitoring unavailable: {error}"),
+        if !self.state.source.is_snapshot() {
+            match FileMonitor::new(&self.state.repository_root) {
+                Ok(monitor) => self.monitor = Some(monitor),
+                Err(error) => self.status = format!("Monitoring unavailable: {error}"),
+            }
         }
         self.draw(&mut output)?;
         while !self.quit_requested {

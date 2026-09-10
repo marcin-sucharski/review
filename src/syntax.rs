@@ -64,6 +64,7 @@ pub fn language_for_path(path: &str) -> &'static str {
         Some("yml" | "yaml") => "yaml",
         Some("md" | "markdown") => "markdown",
         Some("nix") => "nix",
+        Some("tf" | "tfvars" | "hcl") => "hcl",
         _ => "text",
     }
 }
@@ -74,7 +75,7 @@ pub fn fence_language(language: &str) -> &str {
         "javascript" => "js",
         "typescript" => "ts",
         "python" | "rust" | "toml" | "java" | "jsx" | "tsx" | "css" | "html" | "sql" | "xml"
-        | "json" | "properties" | "yaml" | "markdown" | "nix" | "gitignore" => language,
+        | "hcl" | "json" | "properties" | "yaml" | "markdown" | "nix" | "gitignore" => language,
         _ => "text",
     }
 }
@@ -189,6 +190,7 @@ fn arborium_language(language: &str) -> Option<&'static str> {
         "yaml" => Some("yaml"),
         "markdown" => Some("markdown"),
         "nix" => Some("nix"),
+        "hcl" => Some("hcl"),
         "makefile" => Some("makefile"),
         "dockerfile" => Some("dockerfile"),
         "properties" => Some("ini"),
@@ -384,6 +386,10 @@ mod tests {
             ("a.yaml", "yaml"),
             ("a.md", "markdown"),
             ("a.nix", "nix"),
+            ("main.tf", "hcl"),
+            ("prod.auto.tfvars", "hcl"),
+            (".terraform.lock.hcl", "hcl"),
+            ("main.tf.json", "json"),
             ("flake.lock", "json"),
             (".gitignore", "gitignore"),
             ("unknown.zzz", "text"),
@@ -448,6 +454,11 @@ mod tests {
             ("a.yaml", "yaml", "enabled: true"),
             ("a.md", "markdown", "# Heading with **bold**"),
             ("a.nix", "nix", "{ pkgs }: pkgs.mkShell { }"),
+            (
+                "main.tf",
+                "hcl",
+                r#"resource "aws_instance" "web" { count = 2 }"#,
+            ),
             ("package-lock.json", "json", "{\"lockfileVersion\": 3}"),
             (".gitignore", "gitignore", "!important.log"),
         ] {

@@ -151,6 +151,8 @@ Fixture files should cover required languages:
 | `settings.yaml` | YAML |
 | `notes.md` | Markdown |
 | `flake.nix` | Nix |
+| `main.tf`, `prod.auto.tfvars`, `.terraform.lock.hcl` | HCL |
+| `main.tf.json`, `prod.tfvars.json` | JSON |
 | `flake.lock` | JSON |
 | `.gitignore` | gitignore-style highlighting |
 | `unknown.xyz` | Plain text fallback |
@@ -464,3 +466,30 @@ The test suite should cover:
 - local review archive behavior.
 
 High line coverage alone is not enough. The important measure is behavioral coverage of the review workflow.
+
+## Commit Review Tests
+
+- Source menu offers a recent-commit picker and a last-N count prompt.
+- Recent commits display abbreviated hashes and subjects, newest first.
+- `--commit REV` reviews only that commit against its first parent.
+- `--last N` reviews the combined diff of N first-parent commits ending at HEAD.
+- Root commits use an empty tree; merges use their first parent.
+- Staged, unstaged, and untracked changes do not enter commit snapshots.
+- Working-tree edits do not refresh historical reviews.
+- Zero, negative, nonnumeric, excessive counts, invalid refs, and conflicting source flags fail clearly.
+- Historical rename/delete metadata and Terraform highlighting are preserved.
+
+- Shallow boundaries with missing parents fail with fetch/deepen guidance instead of showing a whole-tree addition.
+- Missing snapshot blobs report Git errors rather than silently dropping old/new content.
+- Recent-commit selection stays visible in an 80x16 pane with 20 long subjects.
+- Sequential piped menu answers preserve both the source and commit/count selection.
+
+Run the live regression suite after building the release binary:
+
+```sh
+python tests/live_tmux_regression.py
+```
+
+It creates an isolated tmux server, retains captures in a printed temporary
+directory, and stops only its own server. It covers the required end-to-end
+scenarios plus commit snapshots and the small-terminal commit picker.

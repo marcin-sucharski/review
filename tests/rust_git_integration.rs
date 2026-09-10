@@ -428,3 +428,138 @@ fn deleting_an_added_reviewed_file_yields_no_replacement() {
     assert!(refreshed[0].physically_deleted);
     assert!(refreshed[0].file.is_none());
 }
+
+#[test]
+fn commit_snapshots_exclude_worktree_and_support_root_and_ranges() {
+    use review::git::{collect_commit, collect_last_commits, recent_commits};
+    let repo = TempRepo::new();
+    repo.write("main.tf", "count = 1\n");
+    repo.commit_all("root terraform");
+    let root = repo.git(&["rev-parse", "HEAD"]);
+    repo.write("main.tf", "count = 2\n");
+    repo.commit_all("second terraform");
+    repo.write("main.tf", "count = 3\n");
+    repo.git(&["add", "main.tf"]);
+    repo.write("main.tf", "count = 4\n");
+    repo.write("untracked.tf", "count = 5\n");
+    let (source, files) = collect_commit(repo.path(), "HEAD").unwrap();
+    assert!(source.is_snapshot());
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].language, "hcl");
+    assert!(files[0].lines.iter().any(|line| line.text == "count = 2"));
+    assert!(!files[0].lines.iter().any(|line| line.text == "count = 4"));
+    assert!(
+        refresh_reviewed_files(
+            repo.path(),
+            &source,
+            &files,
+            &HashSet::<String>::new(),
+            true
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let (_, files) = collect_commit(repo.path(), &root).unwrap();
+    assert_eq!(files[0].status, FileStatus::Added);
+    let (_, files) = collect_last_commits(repo.path(), 2).unwrap();
+    assert_eq!(files[0].status, FileStatus::Added);
+    assert!(files[0].lines.iter().any(|line| line.text == "count = 2"));
+    assert!(collect_last_commits(repo.path(), 0).is_err());
+    assert!(collect_last_commits(repo.path(), 3).is_err());
+    assert!(collect_commit(repo.path(), "--help").is_err());
+    let commits = recent_commits(repo.path()).unwrap();
+    assert_eq!(commits.len(), 2);
+    assert!(commits[0].1.contains("second terraform"));
+}
+
+#[test]
+fn commit_reviews_preserve_rename_delete_and_merge_first_parent() {
+    use review::git::{collect_commit, collect_last_commits};
+    let repo = TempRepo::new();
+    repo.write("old.tf", "resource \"null_resource\" \"test\" {}\n");
+    repo.write("delete.tf", "count = 1\n");
+    repo.commit_all("base");
+    repo.git(&["checkout", "-q", "-b", "feature"]);
+    repo.git(&["mv", "old.tf", "new.tf"]);
+    repo.git(&["rm", "delete.tf"]);
+    repo.commit_all("rename and delete");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.write("main.txt", "main branch\n");
+    repo.commit_all("main update");
+    repo.git(&["merge", "--no-ff", "feature", "-m", "merge feature"]);
+    let (_, files) = collect_commit(repo.path(), "HEAD").unwrap();
+    assert_eq!(files.len(), 2);
+    assert!(files.iter().any(|file| file.status == FileStatus::Deleted));
+    assert!(
+        files
+            .iter()
+            .any(|file| file.old_path.as_deref() == Some("old.tf"))
+    );
+    let (_, files) = collect_last_commits(repo.path(), 2).unwrap();
+    assert!(files.iter().any(|file| file.path == "main.txt"));
+}
+
+#[test]
+fn commit_reviews_reject_missing_shallow_parent() {
+    use review::git::{collect_commit, collect_last_commits};
+    let original = TempRepo::new();
+    original.write("unchanged.txt", "existing content\n");
+    original.write("changed.txt", "old content\n");
+    original.commit_all("root");
+    original.write("changed.txt", "new content\n");
+    original.commit_all("change one file");
+    let holder = TempRepo::new();
+    holder.git(&[
+        "clone",
+        "-q",
+        "--depth=1",
+        "--no-local",
+        original.path().to_str().unwrap(),
+        "shallow",
+    ]);
+    let shallow = holder.path().join("shallow");
+    for result in [
+        collect_commit(&shallow, "HEAD"),
+        collect_last_commits(&shallow, 1),
+    ] {
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("parent"), "{error}");
+        assert!(error.contains("fetch or deepen"), "{error}");
+    }
+    // Once the parent is available, the same review must show only its actual change.
+    holder.git(&["-C", "shallow", "fetch", "--deepen=1"]);
+    let (_, files) = collect_commit(&shallow, "HEAD").unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "changed.txt");
+    assert_eq!(files[0].status, FileStatus::Modified);
+}
+
+#[test]
+fn commit_reviews_report_missing_snapshot_blobs() {
+    use review::git::collect_commit;
+    for revision in ["HEAD^", "HEAD"] {
+        let repo = TempRepo::new();
+        repo.write("file.txt", "old content\n");
+        repo.commit_all("root");
+        repo.write("file.txt", "new content\n");
+        repo.commit_all("modify file");
+        let blob = repo.git(&["rev-parse", &format!("{revision}:file.txt")]);
+        fs::remove_file(
+            repo.path()
+                .join(".git/objects")
+                .join(&blob[..2])
+                .join(&blob[2..]),
+        )
+        .unwrap();
+        // Tree comparison still succeeds even though one side cannot be loaded.
+        assert_eq!(
+            repo.git(&["diff", "--name-status", "HEAD^", "HEAD"]),
+            "M\tfile.txt"
+        );
+        let error = collect_commit(repo.path(), "HEAD").unwrap_err();
+        assert!(
+            matches!(error, review::error::ReviewError::Git { .. }),
+            "{error}"
+        );
+    }
+}

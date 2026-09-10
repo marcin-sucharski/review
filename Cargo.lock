@@ -19,6 +19,7 @@ checksum = "abb7a99c146e42da48d5783335814d9bd0f088143aa51fb5ea5b59855df5ca70"
 dependencies = [
  "arborium-css",
  "arborium-dockerfile",
+ "arborium-hcl",
  "arborium-highlight",
  "arborium-html",
  "arborium-ini",
@@ -57,6 +58,17 @@ name = "arborium-dockerfile"
 version = "2.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "168968cacf937c51bb8ed785780467547a5158141d2c53c0d8f6fb64a60d86c9"
+dependencies = [
+ "arborium-sysroot",
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "arborium-hcl"
+version = "2.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9b1c28c0abb1030dc2f82b9b1f51bbec933571375261bddccae8c4a996e8231"
 dependencies = [
  "arborium-sysroot",
  "cc",
@@ -596,7 +608,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "review"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arborium",
  "arborium-theme",

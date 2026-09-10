@@ -53,3 +53,20 @@ cargo build --release
 ```
 
 See [the documentation map](docs/README.md), especially the [testing scenarios](docs/testing-scenarios.md) and [architecture](docs/architecture.md).
+
+Review a historical commit with `review --commit <SHA-or-ref>`, or choose
+**Review a specific commit** in the source menu to see the 20 most recent
+commits (newest first). `review --source commit` opens the same picker.
+
+Use `review --last 3` to review the combined changes from the last three
+first-parent commits ending at HEAD. `review --source commits` (or **Review
+last N commits** in the menu) prompts for a positive count. Counts exceeding
+available history are rejected. Merge commits are compared with their first
+parent; root commits are compared with an empty tree. Both modes use fixed
+committed snapshots, exclude staged/unstaged/untracked changes, and do not
+reload files when the working tree changes. If a shallow clone lacks the parent
+needed for comparison, deepen or fetch its history before reviewing that range.
+
+Terraform files (`.tf`, `.tfvars`, and `.hcl`, including `.terraform.lock.hcl`)
+use HCL highlighting and Markdown fences. Terraform `.tf.json` and
+`.tfvars.json` files use JSON highlighting.

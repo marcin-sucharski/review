@@ -69,7 +69,7 @@ fn help_and_version_do_not_require_a_repository() {
         .unwrap();
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
-    assert!(help.contains("--source <uncommitted|branch>"));
+    assert!(help.contains("--source <uncommitted|branch|commit|commits>"));
     assert!(help.contains("review <COMMAND>"));
 
     let version = Command::new(binary())
@@ -78,7 +78,10 @@ fn help_and_version_do_not_require_a_repository() {
         .output()
         .unwrap();
     assert!(version.status.success());
-    assert_eq!(String::from_utf8(version.stdout).unwrap(), "review 0.2.2\n");
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap(),
+        concat!("review ", env!("CARGO_PKG_VERSION"), "\n")
+    );
 }
 
 #[test]
@@ -171,4 +174,41 @@ fn history_commands_work_outside_git_and_keep_menu_off_stdout() {
     assert!(displayed.status.success());
     assert_eq!(String::from_utf8(displayed.stdout).unwrap(), message);
     assert!(String::from_utf8_lossy(&displayed.stderr).contains("Saved reviews"));
+}
+
+#[test]
+fn sequential_text_prompts_preserve_count_and_commit_selection() {
+    let directory = TempDir::new("sequential-prompts");
+    directory.init_repo();
+    fs::write(directory.path().join("file.txt"), "changed\n").unwrap();
+    directory.git(&["add", "."]);
+    directory.git(&["commit", "-q", "-m", "change"]);
+    for (answers, expected) in [
+        ("4\n2\n", "No review comments."),
+        // The second commit is the empty root commit. Choosing the default instead
+        // would review the nonempty newest commit and return a different message.
+        ("3\n2\n", "no changes found in selected commits"),
+    ] {
+        let mut child = Command::new(binary())
+            .args(["--no-tui", "--stdout"])
+            .current_dir(directory.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(answers.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains(expected));
+    }
 }

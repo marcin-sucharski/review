@@ -1,12 +1,12 @@
 [package]
 name = "review"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Fast terminal code review for local Git changes"
 
 [dependencies]
-arborium = { version = "2.18.1", default-features = false, features = ["lang-css", "lang-dockerfile", "lang-html", "lang-ini", "lang-java", "lang-javascript", "lang-json", "lang-make", "lang-markdown", "lang-nix", "lang-python", "lang-rust", "lang-sql", "lang-toml", "lang-tsx", "lang-typescript", "lang-xml", "lang-yaml"] }
+arborium = { version = "2.18.1", default-features = false, features = ["lang-css", "lang-dockerfile", "lang-html", "lang-hcl", "lang-ini", "lang-java", "lang-javascript", "lang-json", "lang-make", "lang-markdown", "lang-nix", "lang-python", "lang-rust", "lang-sql", "lang-toml", "lang-tsx", "lang-typescript", "lang-xml", "lang-yaml"] }
 arborium-theme = { version = "2.18.1", default-features = false }
 crossterm = { version = "0.29.0", default-features = false, features = ["bracketed-paste", "events"] }
 notify = "8.2.0"

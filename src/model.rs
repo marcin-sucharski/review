@@ -6,6 +6,8 @@ use crate::syntax::language_for_path;
 pub enum ReviewKind {
     Uncommitted,
     Branch,
+    Commit { revision: String },
+    LastCommits { revision: String, count: usize },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,20 +20,34 @@ pub struct ReviewSource {
 impl ReviewSource {
     #[must_use]
     pub fn label(&self) -> String {
-        match self.kind {
+        match &self.kind {
             ReviewKind::Branch => format!(
                 "branch comparison against {}",
                 self.target_branch.as_deref().unwrap_or("unknown")
             ),
             ReviewKind::Uncommitted => "uncommitted changes".to_owned(),
+            ReviewKind::Commit { revision } => format!("commit {revision}"),
+            ReviewKind::LastCommits { revision, count } => {
+                format!("last {count} commits ending at {revision}")
+            }
         }
     }
 
     #[must_use]
+    pub const fn is_snapshot(&self) -> bool {
+        matches!(
+            self.kind,
+            ReviewKind::Commit { .. } | ReviewKind::LastCommits { .. }
+        )
+    }
+
+    #[must_use]
     pub const fn kind_name(&self) -> &'static str {
-        match self.kind {
+        match &self.kind {
             ReviewKind::Uncommitted => "uncommitted",
             ReviewKind::Branch => "branch",
+            ReviewKind::Commit { .. } => "commit",
+            ReviewKind::LastCommits { .. } => "commits",
         }
     }
 }

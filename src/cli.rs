@@ -8,8 +8,8 @@ use crate::archive::{ArchivedReview, archive_review, list_archived_reviews, save
 use crate::error::{Result, ReviewError};
 use crate::format::{OutputFormat, format_review};
 use crate::git::{
-    collect_branch_comparison, collect_uncommitted, current_branch, default_branch_candidates,
-    repository_root,
+    collect_branch_comparison, collect_commit, collect_last_commits, collect_uncommitted,
+    current_branch, default_branch_candidates, recent_commits, repository_root,
 };
 use crate::menu::{MenuOption, select_branch_target, select_option, select_option_to};
 use crate::state::ReviewState;
@@ -21,8 +21,10 @@ const HELP: &str = concat!(
     "       review <COMMAND>\n\n",
     "Review Git changes in a terminal UI.\n\n",
     "Options:\n",
-    "  --source <uncommitted|branch>  Review source; prompts when omitted\n",
+    "  --source <uncommitted|branch|commit|commits>  Review source; prompts when omitted\n",
     "  --target <BRANCH>              Target branch for --source branch\n",
+    "  --commit <REV>                 Review one commit; implies --source commit\n",
+    "  --last <N>                     Review last N first-parent commits; implies --source commits\n",
     "  -o, --output-format <md|xml>   Review message format [default: md]\n",
     "  --stdout                       Print comments without a delivery prompt\n",
     "  -h, --help                     Print help\n",
@@ -36,12 +38,16 @@ const HELP: &str = concat!(
 enum SourceArgument {
     Uncommitted,
     Branch,
+    Commit,
+    Commits,
 }
 
 #[derive(Debug)]
 struct Arguments {
     source: Option<SourceArgument>,
     target: Option<String>,
+    commit: Option<String>,
+    last: Option<usize>,
     output_format: OutputFormat,
     stdout: bool,
     no_tui: bool,
@@ -52,6 +58,8 @@ impl Default for Arguments {
         Self {
             source: None,
             target: None,
+            commit: None,
+            last: None,
             output_format: OutputFormat::Markdown,
             stdout: false,
             no_tui: false,
@@ -112,6 +120,20 @@ fn run_inner(args: &[String]) -> Result<i32> {
     };
     let (review_source, files) = match source {
         SourceArgument::Uncommitted => collect_uncommitted(&root)?,
+        SourceArgument::Commit => {
+            let revision = match arguments.commit {
+                Some(revision) => revision,
+                None => prompt_commit(&root)?,
+            };
+            collect_commit(&root, &revision)?
+        }
+        SourceArgument::Commits => {
+            let count = match arguments.last {
+                Some(count) => count,
+                None => prompt_commit_count()?,
+            };
+            collect_last_commits(&root, count)?
+        }
         SourceArgument::Branch => {
             let target = match arguments.target {
                 Some(target) => target,
@@ -159,6 +181,14 @@ fn parse_arguments(args: &[String]) -> Result<Arguments> {
                 index += 1;
                 parsed.source = Some(parse_source(value_at(args, index, "--source")?)?);
             }
+            "--commit" => {
+                index += 1;
+                parsed.commit = Some(value_at(args, index, "--commit")?.to_owned());
+            }
+            "--last" => {
+                index += 1;
+                parsed.last = Some(parse_count(value_at(args, index, "--last")?)?);
+            }
             "--target" => {
                 index += 1;
                 parsed.target = Some(value_at(args, index, "--target")?.to_owned());
@@ -169,6 +199,12 @@ fn parse_arguments(args: &[String]) -> Result<Arguments> {
             }
             value if value.starts_with("--source=") => {
                 parsed.source = Some(parse_source(&value[9..])?);
+            }
+            value if value.starts_with("--commit=") => {
+                parsed.commit = Some(value[9..].to_owned());
+            }
+            value if value.starts_with("--last=") => {
+                parsed.last = Some(parse_count(&value[7..])?);
             }
             value if value.starts_with("--target=") => {
                 parsed.target = Some(value[9..].to_owned());
@@ -184,10 +220,19 @@ fn parse_arguments(args: &[String]) -> Result<Arguments> {
         }
         index += 1;
     }
-    if parsed.target.is_some() && parsed.source == Some(SourceArgument::Uncommitted) {
-        return Err(ReviewError::InvalidArgument(
-            "--target can only be used with --source branch".to_owned(),
-        ));
+    for (present, required, option) in [
+        (parsed.target.is_some(), SourceArgument::Branch, "--target"),
+        (parsed.commit.is_some(), SourceArgument::Commit, "--commit"),
+        (parsed.last.is_some(), SourceArgument::Commits, "--last"),
+    ] {
+        if present {
+            if parsed.source.is_some_and(|source| source != required) {
+                return Err(ReviewError::InvalidArgument(format!(
+                    "{option} conflicts with the selected review source"
+                )));
+            }
+            parsed.source = Some(required);
+        }
     }
     Ok(parsed)
 }
@@ -202,8 +247,10 @@ fn parse_source(value: &str) -> Result<SourceArgument> {
     match value {
         "uncommitted" => Ok(SourceArgument::Uncommitted),
         "branch" => Ok(SourceArgument::Branch),
+        "commit" => Ok(SourceArgument::Commit),
+        "commits" => Ok(SourceArgument::Commits),
         _ => Err(ReviewError::InvalidArgument(format!(
-            "unsupported review source: {value}; expected uncommitted or branch"
+            "unsupported review source: {value}; expected uncommitted, branch, commit or commits"
         ))),
     }
 }
@@ -224,10 +271,36 @@ fn prompt_source() -> Result<SourceArgument> {
                 .detail("compare branch and current uncommitted changes"),
             MenuOption::new("Review uncommitted changes", "uncommitted")
                 .detail("working tree and staged changes"),
+            MenuOption::new("Review a specific commit", "commit")
+                .detail("select from 20 recent commits"),
+            MenuOption::new("Review last N commits", "commits")
+                .detail("combined changes along first-parent history"),
         ],
         false,
     )?;
     parse_source(&choice)
+}
+
+fn prompt_commit(root: &Path) -> Result<String> {
+    let options = recent_commits(root)?
+        .into_iter()
+        .map(|(sha, label)| MenuOption::new(label, sha))
+        .collect::<Vec<_>>();
+    select_option("Recent commits (newest first)", &options, true)
+}
+
+fn parse_count(value: &str) -> Result<usize> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or_else(|| {
+            ReviewError::InvalidArgument("commit count must be a positive integer".to_owned())
+        })
+}
+
+fn prompt_commit_count() -> Result<usize> {
+    crate::menu::prompt_positive_count("Number of last commits")
 }
 
 fn prompt_branch(root: &Path) -> Result<String> {
@@ -400,6 +473,31 @@ fn archived_review_label(review: &ArchivedReview, index: Option<usize>) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_arguments_infer_sources_and_reject_conflicts() {
+        let parsed = parse_arguments(&["--commit=HEAD~1".into()]).unwrap();
+        assert_eq!(parsed.source, Some(SourceArgument::Commit));
+        assert_eq!(parsed.commit.as_deref(), Some("HEAD~1"));
+        let parsed = parse_arguments(&["--last".into(), "3".into()]).unwrap();
+        assert_eq!(parsed.source, Some(SourceArgument::Commits));
+        assert_eq!(parsed.last, Some(3));
+        for args in [
+            vec!["--last=0"],
+            vec!["--last=-1"],
+            vec!["--last=abc"],
+            vec!["--commit"],
+            vec!["--last"],
+            vec!["--commit=HEAD", "--last=2"],
+            vec!["--source=branch", "--commit=HEAD"],
+            vec!["--source=commits", "--target=main"],
+        ] {
+            assert!(
+                parse_arguments(&args.iter().map(ToString::to_string).collect::<Vec<_>>()).is_err(),
+                "{args:?}"
+            );
+        }
+    }
 
     #[test]
     fn parser_accepts_short_xml_output_option() {

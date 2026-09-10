@@ -188,6 +188,170 @@ pub fn collect_branch_comparison(
     ))
 }
 
+/// Recent commits reachable from HEAD, newest first.
+pub fn recent_commits(root: &Path) -> Result<Vec<(String, String)>> {
+    if !has_head(root)? {
+        return Err(ReviewError::Message("no commits found".to_owned()));
+    }
+    let output = git_output(
+        root,
+        ["log", "-20", "--format=%H%x09%h %s", "HEAD", "--"],
+        true,
+    )?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            line.split_once('\t')
+                .map(|(sha, label)| (sha.to_owned(), label.to_owned()))
+        })
+        .collect())
+}
+
+pub fn collect_commit(root: &Path, revision: &str) -> Result<(ReviewSource, Vec<ReviewFile>)> {
+    collect_commit_range(root, revision, 1, false)
+}
+
+pub fn collect_last_commits(root: &Path, count: usize) -> Result<(ReviewSource, Vec<ReviewFile>)> {
+    collect_commit_range(root, "HEAD", count, true)
+}
+
+fn collect_commit_range(
+    root: &Path,
+    revision: &str,
+    count: usize,
+    multiple: bool,
+) -> Result<(ReviewSource, Vec<ReviewFile>)> {
+    if count == 0 {
+        return Err(ReviewError::InvalidArgument(
+            "commit count must be positive".to_owned(),
+        ));
+    }
+    let resolved = git_output(
+        root,
+        [
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{revision}^{{commit}}"),
+        ],
+        true,
+    )?;
+    let tip = String::from_utf8_lossy(&resolved.stdout).trim().to_owned();
+    let output = git_output(
+        root,
+        [
+            "rev-list",
+            "--first-parent",
+            &format!("--max-count={count}"),
+            &tip,
+            "--",
+        ],
+        true,
+    )?;
+    let history = String::from_utf8_lossy(&output.stdout);
+    let commits = history.lines().collect::<Vec<_>>();
+    if commits.len() != count {
+        return Err(ReviewError::InvalidArgument(format!(
+            "requested {count} commits but only {} are available in first-parent history",
+            commits.len()
+        )));
+    }
+    let oldest = commits[count - 1];
+    // Revision walks hide parents at shallow boundaries. Read the actual commit
+    // headers so missing history cannot be mistaken for a root commit.
+    let commit = git_output(root, ["cat-file", "-p", oldest], true)?;
+    let commit = String::from_utf8_lossy(&commit.stdout);
+    let parent = commit
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .find_map(|line| line.strip_prefix("parent "));
+    let base = if let Some(parent) = parent {
+        if !git_output(
+            root,
+            ["cat-file", "-e", &format!("{parent}^{{commit}}")],
+            false,
+        )?
+        .status
+        .success()
+        {
+            return Err(ReviewError::Message(format!(
+                "parent {parent} of commit {oldest} is unavailable; fetch or deepen repository history before reviewing this commit range"
+            )));
+        }
+        parent.to_owned()
+    } else {
+        // Compute the empty tree using the repository's object format (SHA-1 or SHA-256).
+        let empty = git_output(root, ["hash-object", "-t", "tree", "--stdin"], true)?;
+        String::from_utf8_lossy(&empty.stdout).trim().to_owned()
+    };
+    let output = git_output(
+        root,
+        [
+            "diff",
+            "--name-status",
+            "-z",
+            "--find-renames=20%",
+            &base,
+            &tip,
+            "--",
+        ],
+        true,
+    )?;
+    let mut files = Vec::new();
+    for entry in parse_name_status_z(&output.stdout) {
+        let old = if entry.status == 'A' {
+            Vec::new()
+        } else {
+            read_snapshot_ref(
+                root,
+                &base,
+                entry.old_path.as_deref().unwrap_or(&entry.path),
+            )?
+        };
+        let new = if entry.status == 'D' {
+            Vec::new()
+        } else {
+            read_snapshot_ref(root, &tip, &entry.path)?
+        };
+        let status = if entry.status == 'M' && old == new {
+            FileStatus::Mode
+        } else {
+            status_name(entry.status)
+        };
+        let metadata = metadata_for(&entry);
+        files.push(review_file_from_bytes(
+            entry.path,
+            status,
+            &old,
+            &new,
+            entry.old_path,
+            metadata,
+        ));
+    }
+    if files.is_empty() {
+        return Err(ReviewError::NoChanges(
+            "no changes found in selected commits".to_owned(),
+        ));
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let kind = if multiple {
+        ReviewKind::LastCommits {
+            revision: tip,
+            count,
+        }
+    } else {
+        ReviewKind::Commit { revision: tip }
+    };
+    Ok((
+        ReviewSource {
+            kind,
+            target_branch: None,
+            base_ref: base,
+        },
+        files,
+    ))
+}
+
 fn collect_worktree_files(root: &Path, base: &str) -> Result<Vec<ReviewFile>> {
     let entries = if base == EMPTY_TREE {
         cached_paths(root)?
@@ -255,6 +419,9 @@ pub fn refresh_reviewed_files<S: std::hash::BuildHasher>(
     touched_paths: &HashSet<String, S>,
     refresh_all: bool,
 ) -> Result<Vec<FileRefresh>> {
+    if source.is_snapshot() {
+        return Ok(Vec::new());
+    }
     let inventory = collect_worktree_files(root, &source.base_ref)?;
     let mut used = HashSet::new();
     let mut refreshes = Vec::new();
@@ -555,6 +722,11 @@ fn review_file_from_bytes(
     create_review_file(
         path, status, &old_lines, &new_lines, old_path, binary, metadata,
     )
+}
+
+fn read_snapshot_ref(root: &Path, reference: &str, path: &str) -> Result<Vec<u8>> {
+    let spec = format!("{reference}:{path}");
+    Ok(git_output(root, ["show", &spec], true)?.stdout)
 }
 
 fn read_ref(root: &Path, reference: &str, path: &str) -> Result<Option<Vec<u8>>> {
