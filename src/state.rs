@@ -696,6 +696,33 @@ impl ReviewState {
         }
     }
 
+    /// Reveal all rows in one file without changing comments or code selections.
+    pub fn expand_file(&mut self, path: &str) -> bool {
+        let selected_expansion = match &self.selection {
+            Some(Selection::Expansion { file_path, id }) if file_path == path => self
+                .document_items()
+                .into_iter()
+                .filter_map(|item| item.expansion)
+                .find(|expansion| &expansion.id == id),
+            _ => None,
+        };
+        let Some(file) = self.file_by_path_mut(path) else {
+            return false;
+        };
+        if file.lines.is_empty() {
+            return false;
+        }
+        file.add_visible_interval(0, file.lines.len() - 1);
+        if let Some(expansion) = selected_expansion {
+            self.selection = Some(Selection::Code {
+                file_path: path.to_owned(),
+                anchor_row: expansion.reveal_start,
+                active_row: expansion.reveal_start,
+            });
+        }
+        true
+    }
+
     pub fn expand_context(&mut self, id: &str) -> usize {
         let expansion = self.document_items().into_iter().find_map(|item| {
             item.expansion

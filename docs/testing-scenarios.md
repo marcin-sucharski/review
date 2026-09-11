@@ -493,3 +493,12 @@ python tests/live_tmux_regression.py
 It creates an isolated tmux server, retains captures in a printed temporary
 directory, and stops only its own server. It covers the required end-to-end
 scenarios plus commit snapshots and the small-terminal commit picker.
+
+## Whole-file expansion
+
+- Press `e` to reveal all context in the current file, including top, middle gaps, and bottom.
+- Preserve the viewport, selected range, and comments; other files remain collapsed.
+- After mouse scrolling into another file, `e` expands that viewed file.
+- A selected expansion row becomes a valid code selection.
+- Repeating `e`, or using it on empty/binary metadata, is safe.
+- In comment, search, and command inputs, `e` remains text input.

@@ -40,7 +40,8 @@ const DELETION_SELECTION_BACKGROUND: Color = Color::AnsiValue(223);
 const COMMENT_BACKGROUND: Color = Color::AnsiValue(230);
 const SEARCH_BACKGROUND: Color = Color::AnsiValue(226);
 const SELECTION_BACKGROUND: Color = Color::AnsiValue(229);
-const INITIAL_STATUS: &str = "Tab switches panes. T toggles left pane. z centers code. :q quits.";
+const INITIAL_STATUS: &str =
+    "Tab switches panes. T toggles left pane. e expands file. z centers code. :q quits.";
 const INTERRUPT_WARNING: &str = "Press Ctrl+C again to quit review.";
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const REFRESH_RETRY_DELAY: Duration = Duration::from_millis(250);
@@ -1114,6 +1115,10 @@ impl<'a> ReviewApp<'a> {
                 self.search_buffer.clear();
                 true
             }
+            KeyCode::Char('e') if key.modifiers.is_empty() => {
+                self.expand_current_file();
+                true
+            }
             KeyCode::Char('z') => {
                 self.center_selection();
                 true
@@ -1138,6 +1143,34 @@ impl<'a> ReviewApp<'a> {
             }
             _ => false,
         }
+    }
+
+    fn expand_current_file(&mut self) {
+        let items = self.state.document_items();
+        let Some(top) = items.get(self.review_scroll).cloned() else {
+            return;
+        };
+        let path = top.file_path.clone();
+        if !self.state.expand_file(&path) {
+            self.status = format!("No text context to expand in {path}.");
+            return;
+        }
+        // A disappearing expansion row maps to newly revealed code in that file.
+        // Stable rows retain their position even when context is inserted above them.
+        let index = self.state.document_items().iter().position(|item| {
+            if let Some(expansion) = &top.expansion {
+                item.file_path == path
+                    && item.kind == DocumentKind::Code
+                    && item.row_index == Some(expansion.reveal_start)
+            } else {
+                item == &top
+            }
+        });
+        if let Some(index) = index {
+            self.review_scroll = index;
+        }
+        self.state.file_pane_index = top.file_index;
+        self.status = format!("Expanded all context in {path}.");
     }
 
     fn switch_focus(&mut self) {
@@ -2691,6 +2724,134 @@ mod tests {
             false,
             vec![],
         )
+    }
+
+    #[test]
+    fn expand_file_preserves_viewport_range_comments_and_other_files() {
+        let mut state = state_with_visible_lines(300);
+        let mut other = state.files[0].clone();
+        other.path = "src/b.rs".into();
+        state.files.push(other.clone());
+        state.selection = Some(Selection::Code {
+            file_path: "src/a.rs".into(),
+            anchor_row: 145,
+            active_row: 148,
+        });
+        state.add_comment("keep this range");
+        state.selection = Some(Selection::Code {
+            file_path: "src/a.rs".into(),
+            anchor_row: 145,
+            active_row: 148,
+        });
+        let selection = state.selection.clone();
+        let comments = state.comments.clone();
+        let mut app = ReviewApp::new(&mut state);
+        app.review_scroll = app.state.active_document_index().unwrap();
+        let top = app.state.document_items()[app.review_scroll].clone();
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.state.selection, selection);
+        assert_eq!(app.state.comments, comments);
+        assert_eq!(app.state.files[1], other);
+        assert_eq!(app.state.document_items()[app.review_scroll], top);
+        assert_eq!(app.state.files[0].visible_intervals.len(), 1);
+        assert_eq!(app.state.files[0].visible_intervals[0].start, 0);
+        assert_eq!(
+            app.state.files[0].visible_intervals[0].end,
+            app.state.files[0].lines.len() - 1
+        );
+        assert!(
+            !app.state
+                .document_items()
+                .iter()
+                .any(|item| item.file_index == 0 && item.kind == DocumentKind::Expansion)
+        );
+        let scroll = app.review_scroll;
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.review_scroll, scroll);
+    }
+
+    #[test]
+    fn expand_file_follows_mouse_view_and_repairs_expansion_selection() {
+        let mut state = state_with_visible_lines(300);
+        let mut other = state.files[0].clone();
+        other.path = "src/b.rs".into();
+        state.files.push(other);
+        let original = state.files[0].clone();
+        let mut app = ReviewApp::new(&mut state);
+        let index = app
+            .state
+            .document_items()
+            .iter()
+            .position(|item| item.file_index == 1)
+            .unwrap();
+        app.scroll_review(isize::try_from(index).unwrap());
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.state.files[0], original);
+        assert_eq!(app.state.files[1].visible_intervals[0].start, 0);
+        let index = app
+            .state
+            .document_items()
+            .iter()
+            .position(|item| item.file_index == 0 && item.kind == DocumentKind::Expansion)
+            .unwrap();
+        app.state.select_document_index(index);
+        app.review_scroll = index;
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(matches!(app.state.selection, Some(Selection::Code { .. })));
+        assert!(app.state.active_document_index().is_some());
+    }
+
+    #[test]
+    fn expand_file_anchors_trailing_expansion_to_same_file_and_uses_viewport() {
+        let mut state = state_with_visible_lines(300);
+        let mut other = state.files[0].clone();
+        other.path = "src/b.rs".into();
+        state.files.push(other.clone());
+        let mut app = ReviewApp::new(&mut state);
+        // A stale sidebar index must not override the file actually in view.
+        app.state.file_pane_index = 1;
+        let items = app.state.document_items();
+        let index = items
+            .iter()
+            .rposition(|item| item.file_index == 0 && item.kind == DocumentKind::Expansion)
+            .unwrap();
+        let row = items[index].expansion.as_ref().unwrap().reveal_start;
+        app.review_scroll = index;
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        let top = &app.state.document_items()[app.review_scroll];
+        assert_eq!(top.file_path, "src/a.rs");
+        assert_eq!(top.row_index, Some(row));
+        assert_eq!(app.state.files[1], other);
+        assert_eq!(app.state.file_pane_index, 0);
+    }
+
+    #[test]
+    fn expand_key_is_text_in_inputs_and_safe_for_empty_files() {
+        let mut state = state_with_visible_lines(300);
+        let intervals = state.files[0].visible_intervals.clone();
+        let mut app = ReviewApp::new(&mut state);
+        app.start_new_comment();
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.comment_buffer, "e");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        for opener in ['/', ':'] {
+            app.handle_key(KeyEvent::new(KeyCode::Char(opener), KeyModifiers::NONE));
+            app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+            assert_eq!(
+                if opener == '/' {
+                    &app.search_buffer
+                } else {
+                    &app.command_buffer
+                },
+                "e"
+            );
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        assert_eq!(app.state.files[0].visible_intervals, intervals);
+        app.state.files[0].lines.clear();
+        app.review_scroll = 0;
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(app.status.contains("No text context"));
     }
 
     #[test]

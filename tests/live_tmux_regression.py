@@ -217,6 +217,17 @@ try:
     c = cap('mouse_right')
     check(b != c, 'mouse wheel far-right column')
     check('long.txt' in c.splitlines()[0].split('│', 1)[1], 'sticky file header')
+    top_before = c.splitlines()[1].split('│', 1)[1]
+    literal('e')
+    expanded = cap('whole_file')
+    check('Expanded all context in long.txt.' in expanded, 'e expands current file')
+    check(expanded.splitlines()[1].split('│', 1)[1] == top_before, 'e preserves viewport')
+    for needle in ['line 000', 'line 150', 'line 249']:
+        literal('/' + needle)
+        keys('Enter')
+        check(needle in cap() and 'No matches' not in cap(), 'whole file context ' + needle)
+    literal('e')
+    check('Expanded all context in long.txt.' in cap(), 'repeated e is safe')
     keys('C-c')
     check('Press Ctrl+C again' in cap(), 'first interrupt warning')
     keys('Down')

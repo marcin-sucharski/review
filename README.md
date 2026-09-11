@@ -32,7 +32,7 @@ review --source branch --target main
 review --source branch --target main --output-format xml --stdout
 ```
 
-The file pane is hidden initially; press `T` to show it. Use arrows or `j`/`k` to move, Shift+arrow to select a range, Enter to comment, and Ctrl+J for a newline in a comment. Press Enter on a saved inline comment to edit it, or Backspace/Delete to remove it. Search with `/`, cycle matches with `n`/`p`, and quit with `:q`.
+The file pane is hidden initially; press `T` to show it. Use arrows or `j`/`k` to move, Shift+arrow to select a range, Enter to comment, and Ctrl+J for a newline in a comment. Press Enter on a saved inline comment to edit it, or Backspace/Delete to remove it. Press `e` to reveal all hidden context in the current file while preserving your place and comments. Search with `/`, cycle matches with `n`/`p`, and quit with `:q`.
 
 Every completed non-empty review is archived under `$XDG_DATA_HOME/review/reviews`, falling back to `~/.local/share/review/reviews`:
 
