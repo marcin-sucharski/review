@@ -57,7 +57,10 @@ pub fn archive_review(state: &ReviewState, review_message: &str) -> Result<PathB
         .map_err(|error| ReviewError::io("could not create review archive directory", error))?;
     let payload = ArchivePayload {
         path: state.repository_root.to_string_lossy().into_owned(),
-        branch: current_branch(&state.repository_root)?,
+        branch: match state.source.source_branch() {
+            Some(branch) => branch.to_owned(),
+            None => current_branch(&state.repository_root)?,
+        },
         review_message: review_message.to_owned(),
     };
     let encoded = serde_json::to_vec_pretty(&payload).map_err(|error| {
@@ -258,6 +261,74 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+
+    use crate::model::{ReviewKind, ReviewSource};
+
+    #[test]
+    fn stacked_archive_uses_reviewed_branch_instead_of_checkout() {
+        const CHILD_DIRECTORY: &str = "REVIEW_STACKED_ARCHIVE_TEST_DIRECTORY";
+        let Some(directory) = env::var_os(CHILD_DIRECTORY) else {
+            // Isolate the archive destination without mutating the parallel test
+            // process's environment or writing into the user's data directory.
+            let directory = env::temp_dir().join(format!(
+                "review-stacked-archive-test-{}-{}",
+                std::process::id(),
+                FILE_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&directory).unwrap();
+            let output = Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "archive::tests::stacked_archive_uses_reviewed_branch_instead_of_checkout",
+                    "--nocapture",
+                ])
+                .env(CHILD_DIRECTORY, &directory)
+                .env("XDG_DATA_HOME", directory.join("data"))
+                .output()
+                .unwrap();
+            fs::remove_dir_all(directory).unwrap();
+            assert!(
+                output.status.success(),
+                "archive subprocess failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let repository = PathBuf::from(directory).join("repo");
+        fs::create_dir(&repository).unwrap();
+        let initialized = Command::new("git")
+            .args(["init", "-q", "-b", "unrelated-checkout"])
+            .arg(&repository)
+            .status()
+            .unwrap();
+        assert!(initialized.success());
+        assert_eq!(current_branch(&repository).unwrap(), "unrelated-checkout");
+        let state = ReviewState::new(
+            &repository,
+            ReviewSource {
+                kind: ReviewKind::Stacked {
+                    source_branch: "feature/upper".into(),
+                    source_ref: "1".repeat(40),
+                    target_ref: "2".repeat(40),
+                },
+                target_branch: Some("feature/lower".into()),
+                base_ref: "3".repeat(40),
+            },
+            vec![],
+        );
+        let message = format!("{}\nReview this snapshot.", state.source.label());
+        let path = archive_review(&state, &message).unwrap();
+        let payload: ArchivePayload = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(payload.branch, "feature/upper");
+        assert_eq!(payload.path, repository.to_string_lossy());
+        assert_eq!(payload.review_message, message);
+        let archived = list_archived_reviews(1).unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].branch, "feature/upper");
+        assert_eq!(archived[0].review_message, message);
+    }
 
     #[test]
     fn utc_stamp_matches_epoch_and_known_date() {

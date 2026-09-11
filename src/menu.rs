@@ -182,6 +182,14 @@ pub fn prompt_positive_count(title: &str) -> Result<usize> {
     }
 }
 
+fn branch_comparison_label(current: &str, target: &str) -> String {
+    if current.is_empty() {
+        target.to_owned()
+    } else {
+        format!("{current} -> {target}")
+    }
+}
+
 pub fn select_branch_target(
     title: &str,
     current_branch: &str,
@@ -196,7 +204,7 @@ pub fn select_branch_target(
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         let options = branches
             .iter()
-            .map(|branch| MenuOption::new(format!("{current_branch} -> {branch}"), branch))
+            .map(|branch| MenuOption::new(branch_comparison_label(current_branch, branch), branch))
             .collect::<Vec<_>>();
         return select_option_text(title, &options, false);
     }
@@ -484,7 +492,10 @@ fn render_branch_lines(
         for (offset, branch) in visible.iter().enumerate() {
             let index = window_start + offset;
             let prefix = if index == selected { '>' } else { ' ' };
-            lines.push(format!("{prefix} {current} -> {branch}"));
+            lines.push(format!(
+                "{prefix} {}",
+                branch_comparison_label(current, branch)
+            ));
         }
         let below = branches.len() - window_start - visible.len();
         if window_start > 0 || below > 0 {

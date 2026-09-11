@@ -502,3 +502,13 @@ scenarios plus commit snapshots and the small-terminal commit picker.
 - A selected expansion row becomes a valid code selection.
 - Repeating `e`, or using it on empty/binary metadata, is safe.
 - In comment, search, and command inputs, `e` remains text input.
+
+## Stacked PR reviews
+
+- Choose stacked PR mode, then source branch, then target branch; both pickers use existing ordering and filtering.
+- Review first layer against master, and second layer against first layer, without checking out either.
+- Include only source changes since merge base, excluding target-only changes and all working-tree changes.
+- Support local/remote branch names, reject missing branches/tags/revision expressions, handle empty comparisons.
+- Markdown/XML and saved review files preserve exact selected source/target branch names and frozen commit IDs.
+- Archive history names the reviewed source branch even from an unrelated checkout.
+- CLI: `review --source stacked --branch stack/second --target stack/first`.

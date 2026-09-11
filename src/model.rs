@@ -5,9 +5,21 @@ use crate::syntax::language_for_path;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReviewKind {
     Uncommitted,
-    Branch,
-    Commit { revision: String },
-    LastCommits { revision: String, count: usize },
+    Branch {
+        source_branch: String,
+    },
+    Stacked {
+        source_branch: String,
+        source_ref: String,
+        target_ref: String,
+    },
+    Commit {
+        revision: String,
+    },
+    LastCommits {
+        revision: String,
+        count: usize,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,9 +33,18 @@ impl ReviewSource {
     #[must_use]
     pub fn label(&self) -> String {
         match &self.kind {
-            ReviewKind::Branch => format!(
-                "branch comparison against {}",
+            ReviewKind::Branch { source_branch } => format!(
+                "source branch {source_branch} against target branch {}",
                 self.target_branch.as_deref().unwrap_or("unknown")
+            ),
+            ReviewKind::Stacked {
+                source_branch,
+                source_ref,
+                target_ref,
+            } => format!(
+                "stacked PR: source branch {source_branch} ({source_ref}) against target branch {} ({target_ref}); merge base {}",
+                self.target_branch.as_deref().unwrap_or("unknown"),
+                self.base_ref
             ),
             ReviewKind::Uncommitted => "uncommitted changes".to_owned(),
             ReviewKind::Commit { revision } => format!("commit {revision}"),
@@ -34,10 +55,20 @@ impl ReviewSource {
     }
 
     #[must_use]
+    pub fn source_branch(&self) -> Option<&str> {
+        match &self.kind {
+            ReviewKind::Branch { source_branch } | ReviewKind::Stacked { source_branch, .. } => {
+                Some(source_branch)
+            }
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub const fn is_snapshot(&self) -> bool {
         matches!(
             self.kind,
-            ReviewKind::Commit { .. } | ReviewKind::LastCommits { .. }
+            ReviewKind::Commit { .. } | ReviewKind::LastCommits { .. } | ReviewKind::Stacked { .. }
         )
     }
 
@@ -45,7 +76,8 @@ impl ReviewSource {
     pub const fn kind_name(&self) -> &'static str {
         match &self.kind {
             ReviewKind::Uncommitted => "uncommitted",
-            ReviewKind::Branch => "branch",
+            ReviewKind::Branch { .. } => "branch",
+            ReviewKind::Stacked { .. } => "stacked",
             ReviewKind::Commit { .. } => "commit",
             ReviewKind::LastCommits { .. } => "commits",
         }

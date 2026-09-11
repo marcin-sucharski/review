@@ -143,6 +143,12 @@ fn branch_collection_combines_commits_staging_worktree_and_untracked() {
     let (source, files) = collect_branch_comparison(repo.path(), "main").unwrap();
     assert_eq!(source.target_branch.as_deref(), Some("main"));
     assert_eq!(
+        source.kind,
+        review::model::ReviewKind::Branch {
+            source_branch: "feature".to_owned()
+        }
+    );
+    assert_eq!(
         files
             .iter()
             .map(|file| file.path.as_str())
@@ -561,5 +567,160 @@ fn commit_reviews_report_missing_snapshot_blobs() {
             matches!(error, review::error::ReviewError::Git { .. }),
             "{error}"
         );
+    }
+}
+
+#[test]
+fn stacked_reviews_freeze_selected_branches_without_touching_dirty_checkout() {
+    use review::git::collect_stacked_comparison;
+    use review::model::ReviewKind;
+    let repo = TempRepo::new();
+    repo.write("base.txt", "base\n");
+    repo.commit_all("base");
+    let base = repo.git(&["rev-parse", "HEAD"]);
+    repo.git(&["checkout", "-qb", "first"]);
+    repo.write("first.tf", "count = 1\n");
+    repo.commit_all("first PR");
+    let first = repo.git(&["rev-parse", "HEAD"]);
+    repo.git(&["checkout", "-qb", "second"]);
+    repo.write("second.tf", "count = 2\n");
+    repo.commit_all("second PR");
+    let second = repo.git(&["rev-parse", "HEAD"]);
+    repo.git(&["checkout", "-q", "main"]);
+    repo.write("base.txt", "staged\n");
+    repo.git(&["add", "base.txt"]);
+    repo.write("base.txt", "unstaged\n");
+    repo.write("untracked.tf", "count = 3\n");
+    let status = repo.git(&["status", "--porcelain=v1"]);
+    let index = repo.git(&["write-tree"]);
+
+    let (source, files) = collect_stacked_comparison(repo.path(), "first", "main").unwrap();
+    assert_eq!(source.base_ref, base);
+    assert_eq!(source.target_branch.as_deref(), Some("main"));
+    assert_eq!(
+        source.kind,
+        ReviewKind::Stacked {
+            source_branch: "first".to_owned(),
+            source_ref: first.clone(),
+            target_ref: base,
+        }
+    );
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "first.tf");
+
+    let (source, files) = collect_stacked_comparison(repo.path(), "second", "first").unwrap();
+    assert!(source.is_snapshot());
+    assert_eq!(source.base_ref, first);
+    assert_eq!(source.target_branch.as_deref(), Some("first"));
+    assert_eq!(
+        source.kind,
+        ReviewKind::Stacked {
+            source_branch: "second".to_owned(),
+            source_ref: second,
+            target_ref: first,
+        }
+    );
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "second.tf");
+    repo.git(&["branch", "-f", "second", "main"]);
+    assert!(
+        refresh_reviewed_files(
+            repo.path(),
+            &source,
+            &files,
+            &HashSet::<String>::new(),
+            true
+        )
+        .unwrap()
+        .is_empty()
+    );
+    assert_eq!(repo.git(&["branch", "--show-current"]), "main");
+    assert_eq!(repo.git(&["status", "--porcelain=v1"]), status);
+    assert_eq!(repo.git(&["write-tree"]), index);
+    assert_eq!(
+        fs::read_to_string(repo.path().join("base.txt")).unwrap(),
+        "unstaged\n"
+    );
+    assert_eq!(
+        fs::read_to_string(repo.path().join("untracked.tf")).unwrap(),
+        "count = 3\n"
+    );
+}
+
+#[test]
+fn stacked_reviews_use_merge_base_and_accept_remote_branches() {
+    use review::git::collect_stacked_comparison;
+    let repo = TempRepo::new();
+    repo.write("base.txt", "base\n");
+    repo.commit_all("base");
+    let base = repo.git(&["rev-parse", "HEAD"]);
+    repo.git(&["checkout", "-qb", "feature"]);
+    repo.write("feature.tf", "count = 1\n");
+    repo.commit_all("feature");
+    repo.git(&["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+    repo.git(&["checkout", "-q", "main"]);
+    repo.write("target-only.txt", "target advanced\n");
+    repo.commit_all("target diverged");
+    for branch in [
+        "feature",
+        "refs/heads/feature",
+        "origin/feature",
+        "refs/remotes/origin/feature",
+    ] {
+        let (source, files) = collect_stacked_comparison(repo.path(), branch, "main").unwrap();
+        assert_eq!(source.base_ref, base);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "feature.tf");
+    }
+    repo.git(&["tag", "feature"]);
+    repo.git(&["tag", "origin/feature"]);
+    let candidates = review::git::default_branch_candidates(repo.path()).unwrap();
+    assert_eq!(candidates[0], "main");
+    assert!(candidates.iter().any(|branch| branch == "heads/feature"));
+    assert!(
+        candidates
+            .iter()
+            .any(|branch| branch == "remotes/origin/feature")
+    );
+    for branch in candidates.iter().filter(|branch| branch.as_str() != "main") {
+        let (_, files) = collect_stacked_comparison(repo.path(), branch, "main").unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "feature.tf");
+    }
+}
+
+#[test]
+fn stacked_reviews_reject_non_branches_and_empty_comparisons() {
+    use review::error::ReviewError;
+    use review::git::collect_stacked_comparison;
+    let repo = TempRepo::new();
+    repo.write("base.txt", "base\n");
+    repo.commit_all("base");
+    repo.git(&["branch", "same"]);
+    repo.git(&["tag", "release"]);
+    repo.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/heads/main",
+    ]);
+    let sha = repo.git(&["rev-parse", "HEAD"]);
+    for branch in [
+        "missing",
+        "HEAD",
+        "main~0",
+        "--help",
+        "release",
+        "refs/tags/release",
+        "origin/HEAD",
+        &sha,
+    ] {
+        for (source, target) in [(branch, "main"), ("main", branch)] {
+            let error = collect_stacked_comparison(repo.path(), source, target).unwrap_err();
+            assert!(matches!(error, ReviewError::InvalidArgument(_)), "{error}");
+        }
+    }
+    for target in ["main", "same"] {
+        let error = collect_stacked_comparison(repo.path(), "main", target).unwrap_err();
+        assert!(matches!(error, ReviewError::NoChanges(_)), "{error}");
     }
 }

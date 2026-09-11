@@ -47,10 +47,22 @@ fn sanitize_formatted_output(output: &str) -> String {
 }
 
 fn format_markdown(state: &ReviewState) -> String {
+    let label = state.source.label();
+    let source = if state.source.source_branch().is_some() {
+        let longest = label
+            .split(|character| character != '`')
+            .map(str::len)
+            .max()
+            .unwrap_or(0);
+        let delimiter = "`".repeat(longest + 1);
+        format!("{delimiter} {label} {delimiter}")
+    } else {
+        label
+    };
     let mut output = format!(
         "# Review comments for {}\n## Source: {}\n\n",
         state.repository_root.display(),
-        state.source.label()
+        source
     );
     for file in &state.files {
         let comments = state.comments_for_file(&file.path);
@@ -99,6 +111,13 @@ fn format_xml(state: &ReviewState) -> String {
         state.source.kind_name(),
         xml_attribute(&state.source.base_ref)
     );
+    if let Some(branch) = state.source.source_branch() {
+        let _ = write!(
+            source_attributes,
+            " source_branch=\"{}\"",
+            xml_attribute(branch)
+        );
+    }
     if let Some(target) = &state.source.target_branch {
         let _ = write!(
             source_attributes,
@@ -360,6 +379,60 @@ mod tests {
         let output = format_review(&commented_state("body~~~text"), OutputFormat::Markdown);
         assert!(output.contains("````python"));
         assert!(output.contains("~~~~text"));
+    }
+
+    #[test]
+    fn stacked_output_preserves_branch_names_and_snapshot_references() {
+        let mut state = commented_state("review the upper branch");
+        let source_ref = "1".repeat(40);
+        let target_ref = "2".repeat(40);
+        let base_ref = "3".repeat(40);
+        state.source = ReviewSource {
+            kind: ReviewKind::Stacked {
+                source_branch: "feature/upper&fix".into(),
+                source_ref: source_ref.clone(),
+                target_ref: target_ref.clone(),
+            },
+            target_branch: Some("feature/lower&base".into()),
+            base_ref: base_ref.clone(),
+        };
+
+        let markdown = format_review(&state, OutputFormat::Markdown);
+        assert!(markdown.contains("source branch feature/upper&fix"));
+        assert!(markdown.contains("target branch feature/lower&base"));
+        let xml = format_review(&state, OutputFormat::Xml);
+        assert!(xml.contains("kind=\"stacked\""));
+        assert!(xml.contains("source_branch=\"feature/upper&amp;fix\""));
+        assert!(xml.contains("target_branch=\"feature/lower&amp;base\""));
+        assert!(xml.contains(&format!("base_ref=\"{base_ref}\"")));
+        assert!(xml.contains("source branch feature/upper&amp;fix"));
+        assert!(xml.contains("target branch feature/lower&amp;base"));
+        for output in [&markdown, &xml] {
+            for reference in [&source_ref, &target_ref, &base_ref] {
+                assert!(output.contains(reference));
+            }
+            assert!(output.contains("review the upper branch"));
+        }
+    }
+
+    #[test]
+    fn branch_names_render_literally_in_markdown_source_heading() {
+        let mut state = commented_state("inspect names");
+        state.source = ReviewSource {
+            kind: ReviewKind::Stacked {
+                source_branch: "feature/<fix>``&change".into(),
+                source_ref: "a".repeat(40),
+                target_ref: "b".repeat(40),
+            },
+            target_branch: Some("base/*release*".into()),
+            base_ref: "c".repeat(40),
+        };
+        let markdown = format_review(&state, OutputFormat::Markdown);
+        let heading = markdown.lines().nth(1).unwrap();
+        assert_eq!(
+            heading,
+            format!("## Source: ``` {} ```", state.source.label())
+        );
     }
 
     #[test]

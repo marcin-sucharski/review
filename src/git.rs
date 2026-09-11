@@ -180,12 +180,80 @@ pub fn collect_branch_comparison(
     }
     Ok((
         ReviewSource {
-            kind: ReviewKind::Branch,
+            kind: ReviewKind::Branch {
+                source_branch: current_branch(root)?,
+            },
             target_branch: Some(target_branch.to_owned()),
             base_ref: merge_base,
         },
         files,
     ))
+}
+
+pub fn collect_stacked_comparison(
+    root: &Path,
+    source_branch: &str,
+    target_branch: &str,
+) -> Result<(ReviewSource, Vec<ReviewFile>)> {
+    let source_ref = resolve_branch(root, source_branch)?;
+    let target_ref = resolve_branch(root, target_branch)?;
+    let output = git_output(root, ["merge-base", &source_ref, &target_ref], true)?;
+    let base_ref = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let files = collect_snapshot_files(root, &base_ref, &source_ref)?;
+    if files.is_empty() {
+        return Err(ReviewError::NoChanges(format!(
+            "no changes found in branch {source_branch} against {target_branch}"
+        )));
+    }
+    Ok((
+        ReviewSource {
+            kind: ReviewKind::Stacked {
+                source_branch: source_branch.to_owned(),
+                source_ref,
+                target_ref,
+            },
+            target_branch: Some(target_branch.to_owned()),
+            base_ref,
+        },
+        files,
+    ))
+}
+
+fn resolve_branch(root: &Path, branch: &str) -> Result<String> {
+    // Match complete branch ref names instead of interpreting user input as a
+    // revision expression. Prefer local branches when a short name is ambiguous.
+    let candidates = if branch.starts_with("refs/") {
+        vec![branch.to_owned()]
+    } else {
+        vec![
+            format!("refs/heads/{branch}"),
+            format!("refs/remotes/{branch}"),
+            // refname:short keeps heads/ or remotes/ when a tag is ambiguous.
+            format!("refs/{branch}"),
+        ]
+    };
+    let output = git_output(
+        root,
+        [
+            "for-each-ref",
+            "--format=%(refname)%09%(objectname)%09%(symref)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+        true,
+    )?;
+    let refs = String::from_utf8_lossy(&output.stdout);
+    for candidate in candidates {
+        for line in refs.lines() {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            if fields.len() == 3 && fields[0] == candidate && fields[2].is_empty() {
+                return Ok(fields[1].to_owned());
+            }
+        }
+    }
+    Err(ReviewError::InvalidArgument(format!(
+        "branch {branch:?} was not found; select an existing local or remote branch"
+    )))
 }
 
 /// Recent commits reachable from HEAD, newest first.
@@ -284,56 +352,12 @@ fn collect_commit_range(
         let empty = git_output(root, ["hash-object", "-t", "tree", "--stdin"], true)?;
         String::from_utf8_lossy(&empty.stdout).trim().to_owned()
     };
-    let output = git_output(
-        root,
-        [
-            "diff",
-            "--name-status",
-            "-z",
-            "--find-renames=20%",
-            &base,
-            &tip,
-            "--",
-        ],
-        true,
-    )?;
-    let mut files = Vec::new();
-    for entry in parse_name_status_z(&output.stdout) {
-        let old = if entry.status == 'A' {
-            Vec::new()
-        } else {
-            read_snapshot_ref(
-                root,
-                &base,
-                entry.old_path.as_deref().unwrap_or(&entry.path),
-            )?
-        };
-        let new = if entry.status == 'D' {
-            Vec::new()
-        } else {
-            read_snapshot_ref(root, &tip, &entry.path)?
-        };
-        let status = if entry.status == 'M' && old == new {
-            FileStatus::Mode
-        } else {
-            status_name(entry.status)
-        };
-        let metadata = metadata_for(&entry);
-        files.push(review_file_from_bytes(
-            entry.path,
-            status,
-            &old,
-            &new,
-            entry.old_path,
-            metadata,
-        ));
-    }
+    let files = collect_snapshot_files(root, &base, &tip)?;
     if files.is_empty() {
         return Err(ReviewError::NoChanges(
             "no changes found in selected commits".to_owned(),
         ));
     }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
     let kind = if multiple {
         ReviewKind::LastCommits {
             revision: tip,
@@ -350,6 +374,51 @@ fn collect_commit_range(
         },
         files,
     ))
+}
+
+fn collect_snapshot_files(root: &Path, base: &str, tip: &str) -> Result<Vec<ReviewFile>> {
+    let output = git_output(
+        root,
+        [
+            "diff",
+            "--name-status",
+            "-z",
+            "--find-renames=20%",
+            base,
+            tip,
+            "--",
+        ],
+        true,
+    )?;
+    let mut files = Vec::new();
+    for entry in parse_name_status_z(&output.stdout) {
+        let old = if entry.status == 'A' {
+            Vec::new()
+        } else {
+            read_snapshot_ref(root, base, entry.old_path.as_deref().unwrap_or(&entry.path))?
+        };
+        let new = if entry.status == 'D' {
+            Vec::new()
+        } else {
+            read_snapshot_ref(root, tip, &entry.path)?
+        };
+        let status = if entry.status == 'M' && old == new {
+            FileStatus::Mode
+        } else {
+            status_name(entry.status)
+        };
+        let metadata = metadata_for(&entry);
+        files.push(review_file_from_bytes(
+            entry.path,
+            status,
+            &old,
+            &new,
+            entry.old_path,
+            metadata,
+        ));
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
 }
 
 fn collect_worktree_files(root: &Path, base: &str) -> Result<Vec<ReviewFile>> {

@@ -70,3 +70,23 @@ needed for comparison, deepen or fetch its history before reviewing that range.
 Terraform files (`.tf`, `.tfvars`, and `.hcl`, including `.terraform.lock.hcl`)
 use HCL highlighting and Markdown fences. Terraform `.tf.json` and
 `.tfvars.json` files use JSON highlighting.
+
+
+For stacked PRs, choose **Review stacked PR changes**, select the source branch
+(the layer to review), then the target branch (the preceding layer or base):
+
+```sh
+review --source stacked
+review --branch stack/first --target master
+review --branch stack/second --target stack/first
+```
+
+Both pickers use the existing branch ordering: `origin/master`, `master`, and
+`main` are preferred, followed by other common base branches and topic branches
+ordered by newest commit date. Type to filter and use arrows/Enter to select.
+Local and remote branches are supported; the source is excluded from the target
+picker. Stacked reviews compare the source snapshot against its merge base with
+the target, without checking out either branch or including uncommitted edits.
+Review output records the exact source and target branch names, both frozen
+commit IDs, and the merge base. Saved reviews use the reviewed source branch in
+history even when a different branch is checked out.

@@ -69,7 +69,7 @@ fn help_and_version_do_not_require_a_repository() {
         .unwrap();
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
-    assert!(help.contains("--source <uncommitted|branch|commit|commits>"));
+    assert!(help.contains("--source <uncommitted|branch|commit|commits|stacked>"));
     assert!(help.contains("review <COMMAND>"));
 
     let version = Command::new(binary())
@@ -210,5 +210,53 @@ fn sequential_text_prompts_preserve_count_and_commit_selection() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains(expected));
+    }
+}
+
+#[test]
+fn stacked_review_accepts_flags_and_sequential_branch_pickers() {
+    let directory = TempDir::new("stacked-cli");
+    directory.init_repo();
+    directory.git(&["branch", "master"]);
+    directory.git(&["checkout", "-qb", "stack/first"]);
+    fs::write(directory.path().join("first.txt"), "first layer\n").unwrap();
+    directory.git(&["add", "."]);
+    directory.git(&["commit", "-qm", "first"]);
+    directory.git(&["checkout", "-qb", "stack/second"]);
+    fs::write(directory.path().join("second.txt"), "second layer\n").unwrap();
+    directory.git(&["add", "."]);
+    directory.git(&["commit", "-qm", "second"]);
+    directory.git(&["checkout", "-q", "main"]);
+    for (args, answers) in [
+        (vec!["--branch=stack/second", "--target=stack/first"], ""),
+        (vec![], "5\nstack/second\nstack/first\n"),
+    ] {
+        let mut child = Command::new(binary())
+            .args(args)
+            .args(["--no-tui", "--stdout"])
+            .current_dir(directory.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(answers.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("No review comments."), "{stdout}");
+        if !answers.is_empty() {
+            assert!(stdout.contains("Branch to review") && stdout.contains("Target branch"));
+            assert!(stdout.find("master").unwrap() < stdout.find("stack/first").unwrap());
+        }
     }
 }

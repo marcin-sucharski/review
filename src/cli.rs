@@ -8,8 +8,9 @@ use crate::archive::{ArchivedReview, archive_review, list_archived_reviews, save
 use crate::error::{Result, ReviewError};
 use crate::format::{OutputFormat, format_review};
 use crate::git::{
-    collect_branch_comparison, collect_commit, collect_last_commits, collect_uncommitted,
-    current_branch, default_branch_candidates, recent_commits, repository_root,
+    collect_branch_comparison, collect_commit, collect_last_commits, collect_stacked_comparison,
+    collect_uncommitted, current_branch, default_branch_candidates, recent_commits,
+    repository_root,
 };
 use crate::menu::{MenuOption, select_branch_target, select_option, select_option_to};
 use crate::state::ReviewState;
@@ -21,8 +22,9 @@ const HELP: &str = concat!(
     "       review <COMMAND>\n\n",
     "Review Git changes in a terminal UI.\n\n",
     "Options:\n",
-    "  --source <uncommitted|branch|commit|commits>  Review source; prompts when omitted\n",
-    "  --target <BRANCH>              Target branch for --source branch\n",
+    "  --source <uncommitted|branch|commit|commits|stacked>  Review source; prompts when omitted\n",
+    "  --target <BRANCH>              Target branch for branch or stacked reviews\n",
+    "  --branch <BRANCH>              Source branch; implies --source stacked\n",
     "  --commit <REV>                 Review one commit; implies --source commit\n",
     "  --last <N>                     Review last N first-parent commits; implies --source commits\n",
     "  -o, --output-format <md|xml>   Review message format [default: md]\n",
@@ -40,12 +42,14 @@ enum SourceArgument {
     Branch,
     Commit,
     Commits,
+    Stacked,
 }
 
 #[derive(Debug)]
 struct Arguments {
     source: Option<SourceArgument>,
     target: Option<String>,
+    branch: Option<String>,
     commit: Option<String>,
     last: Option<usize>,
     output_format: OutputFormat,
@@ -58,6 +62,7 @@ impl Default for Arguments {
         Self {
             source: None,
             target: None,
+            branch: None,
             commit: None,
             last: None,
             output_format: OutputFormat::Markdown,
@@ -134,6 +139,22 @@ fn run_inner(args: &[String]) -> Result<i32> {
             };
             collect_last_commits(&root, count)?
         }
+        SourceArgument::Stacked => {
+            let branch = match arguments.branch {
+                Some(branch) => branch,
+                None => select_branch_target(
+                    "Branch to review",
+                    "",
+                    &default_branch_candidates(&root)?,
+                    true,
+                )?,
+            };
+            let target = match arguments.target {
+                Some(target) => target,
+                None => prompt_target_branch(&root, &branch)?,
+            };
+            collect_stacked_comparison(&root, &branch, &target)?
+        }
         SourceArgument::Branch => {
             let target = match arguments.target {
                 Some(target) => target,
@@ -189,6 +210,10 @@ fn parse_arguments(args: &[String]) -> Result<Arguments> {
                 index += 1;
                 parsed.last = Some(parse_count(value_at(args, index, "--last")?)?);
             }
+            "--branch" => {
+                index += 1;
+                parsed.branch = Some(value_at(args, index, "--branch")?.to_owned());
+            }
             "--target" => {
                 index += 1;
                 parsed.target = Some(value_at(args, index, "--target")?.to_owned());
@@ -206,6 +231,9 @@ fn parse_arguments(args: &[String]) -> Result<Arguments> {
             value if value.starts_with("--last=") => {
                 parsed.last = Some(parse_count(&value[7..])?);
             }
+            value if value.starts_with("--branch=") => {
+                parsed.branch = Some(value[9..].to_owned());
+            }
             value if value.starts_with("--target=") => {
                 parsed.target = Some(value[9..].to_owned());
             }
@@ -221,7 +249,7 @@ fn parse_arguments(args: &[String]) -> Result<Arguments> {
         index += 1;
     }
     for (present, required, option) in [
-        (parsed.target.is_some(), SourceArgument::Branch, "--target"),
+        (parsed.branch.is_some(), SourceArgument::Stacked, "--branch"),
         (parsed.commit.is_some(), SourceArgument::Commit, "--commit"),
         (parsed.last.is_some(), SourceArgument::Commits, "--last"),
     ] {
@@ -232,6 +260,17 @@ fn parse_arguments(args: &[String]) -> Result<Arguments> {
                 )));
             }
             parsed.source = Some(required);
+        }
+    }
+    if parsed.target.is_some() {
+        match parsed.source {
+            None => parsed.source = Some(SourceArgument::Branch),
+            Some(SourceArgument::Branch | SourceArgument::Stacked) => {}
+            _ => {
+                return Err(ReviewError::InvalidArgument(
+                    "--target requires branch or stacked review".to_owned(),
+                ));
+            }
         }
     }
     Ok(parsed)
@@ -249,8 +288,9 @@ fn parse_source(value: &str) -> Result<SourceArgument> {
         "branch" => Ok(SourceArgument::Branch),
         "commit" => Ok(SourceArgument::Commit),
         "commits" => Ok(SourceArgument::Commits),
+        "stacked" => Ok(SourceArgument::Stacked),
         _ => Err(ReviewError::InvalidArgument(format!(
-            "unsupported review source: {value}; expected uncommitted, branch, commit or commits"
+            "unsupported review source: {value}; expected uncommitted, branch, commit, commits or stacked"
         ))),
     }
 }
@@ -275,6 +315,8 @@ fn prompt_source() -> Result<SourceArgument> {
                 .detail("select from 20 recent commits"),
             MenuOption::new("Review last N commits", "commits")
                 .detail("combined changes along first-parent history"),
+            MenuOption::new("Review stacked PR changes", "stacked")
+                .detail("select source branch, then target branch"),
         ],
         false,
     )?;
@@ -305,16 +347,20 @@ fn prompt_commit_count() -> Result<usize> {
 
 fn prompt_branch(root: &Path) -> Result<String> {
     let current = current_branch(root)?;
+    prompt_target_branch(root, &current)
+}
+
+fn prompt_target_branch(root: &Path, current: &str) -> Result<String> {
     let branches = default_branch_candidates(root)?
         .into_iter()
-        .filter(|branch| branch != &current)
+        .filter(|branch| branch != current)
         .collect::<Vec<_>>();
     if branches.is_empty() {
         return Err(ReviewError::Message(
             "no branches are available for comparison".to_owned(),
         ));
     }
-    select_branch_target("Target branch", &current, &branches, true)
+    select_branch_target("Target branch", current, &branches, true)
 }
 
 fn reset_terminal_after_tui() {
@@ -473,6 +519,36 @@ fn archived_review_label(review: &ArchivedReview, index: Option<usize>) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stacked_arguments_accept_both_branches_and_reject_other_sources() {
+        for args in [
+            vec!["--branch=stack/second", "--target=stack/first"],
+            vec![
+                "--source=stacked",
+                "--branch",
+                "stack/second",
+                "--target",
+                "stack/first",
+            ],
+        ] {
+            let parsed =
+                parse_arguments(&args.iter().map(ToString::to_string).collect::<Vec<_>>()).unwrap();
+            assert_eq!(parsed.source, Some(SourceArgument::Stacked));
+            assert_eq!(parsed.branch.as_deref(), Some("stack/second"));
+            assert_eq!(parsed.target.as_deref(), Some("stack/first"));
+        }
+        for args in [
+            vec!["--source=branch", "--branch=topic"],
+            vec!["--source=stacked", "--commit=HEAD"],
+            vec!["--branch=topic", "--last=2"],
+            vec!["--branch"],
+        ] {
+            assert!(
+                parse_arguments(&args.iter().map(ToString::to_string).collect::<Vec<_>>()).is_err()
+            );
+        }
+    }
 
     #[test]
     fn commit_arguments_infer_sources_and_reject_conflicts() {
