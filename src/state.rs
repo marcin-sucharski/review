@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::model::{
-    CommentPlacement, ReviewComment, ReviewFile, ReviewLine, ReviewSource, VisibleInterval,
+    CommentPlacement, FileStatus, ReviewComment, ReviewFile, ReviewLine, ReviewSource,
+    VisibleInterval,
 };
 
 const EXPANSION_LINES: usize = 20;
@@ -105,6 +106,18 @@ pub enum Selection {
         file_path: String,
         id: u64,
     },
+}
+
+impl Selection {
+    #[must_use]
+    pub fn file_path(&self) -> &str {
+        match self {
+            Self::Metadata { file_path }
+            | Self::Code { file_path, .. }
+            | Self::Expansion { file_path, .. }
+            | Self::Comment { file_path, .. } => file_path,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -564,7 +577,7 @@ impl ReviewState {
         }
         if matches!(self.selection, Some(Selection::Comment { id: selected, .. }) if selected == id)
         {
-            if let Some(comment) = deleted {
+            if let Some(comment) = &deleted {
                 let row = comment.sorted_rows().1.min(
                     self.file_by_path(&comment.file_path)
                         .map_or(0, |file| file.lines.len().saturating_sub(1)),
@@ -592,7 +605,39 @@ impl ReviewState {
                 self.initialize_selection();
             }
         }
+        if let Some(comment) = deleted
+            && self
+                .file_by_path(&comment.file_path)
+                .is_some_and(|file| file.status == FileStatus::Unchanged)
+            && !self
+                .comments
+                .iter()
+                .any(|other| other.file_path == comment.file_path)
+        {
+            self.replace_file(&comment.file_path, None, false);
+        }
         true
+    }
+
+    fn normalize_files(&mut self, sidebar_path: Option<&str>) {
+        self.files.sort_by(|left, right| left.path.cmp(&right.path));
+        if self
+            .selection
+            .as_ref()
+            .is_none_or(|selection| self.file_index(selection.file_path()).is_none())
+        {
+            self.selection = None;
+            self.file_pane_index = 0;
+            self.initialize_selection();
+        }
+        self.file_pane_index = sidebar_path
+            .and_then(|path| self.file_index(path))
+            .or_else(|| {
+                self.selection
+                    .as_ref()
+                    .and_then(|selection| self.file_index(selection.file_path()))
+            })
+            .unwrap_or(0);
     }
 
     pub fn replace_file(
@@ -601,7 +646,17 @@ impl ReviewState {
         replacement: Option<ReviewFile>,
         physically_deleted: bool,
     ) -> RefreshOutcome {
+        let sidebar_path = self
+            .files
+            .get(self.file_pane_index)
+            .map(|file| file.path.clone());
         let Some(file_index) = self.file_index(old_path) else {
+            if let Some(file) = replacement
+                && file.status != FileStatus::Unchanged
+            {
+                self.files.push(file);
+                self.normalize_files(sidebar_path.as_deref());
+            }
             return RefreshOutcome::default();
         };
         let previous_file = self.files[file_index].clone();
@@ -616,17 +671,21 @@ impl ReviewState {
             outcome.deleted_comments = before - self.comments.len();
         }
 
+        let replacement = replacement.filter(|file| {
+            file.status != FileStatus::Unchanged
+                || self
+                    .comments
+                    .iter()
+                    .any(|comment| comment.file_path == old_path)
+        });
         let Some(mut replacement) = replacement else {
             self.files.remove(file_index);
-            self.selection = None;
-            if self.files.is_empty() {
-                self.file_pane_index = 0;
-            } else {
-                self.file_pane_index = file_index.min(self.files.len() - 1);
-                self.initialize_selection();
-            }
+            self.normalize_files(sidebar_path.as_deref());
             return outcome;
         };
+        if replacement.status == FileStatus::Unchanged {
+            replacement.visible_intervals.clear();
+        }
 
         let new_path = replacement.path.clone();
         if !physically_deleted {
@@ -673,9 +732,12 @@ impl ReviewState {
             selected_signature.as_deref(),
             &self.comments,
         );
-        if self.selection.is_none() {
-            self.initialize_selection();
-        }
+        let sidebar_path = if sidebar_path.as_deref() == Some(old_path) {
+            Some(new_path.as_str())
+        } else {
+            sidebar_path.as_deref()
+        };
+        self.normalize_files(sidebar_path);
         outcome
     }
 
@@ -1193,6 +1255,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn unchanged_version(file: &ReviewFile) -> ReviewFile {
+        let lines = file
+            .lines
+            .iter()
+            .filter(|line| line.new_line.is_some())
+            .map(|line| line.text.clone())
+            .collect::<Vec<_>>();
+        create_review_file(
+            file.path.clone(),
+            FileStatus::Unchanged,
+            &lines,
+            &lines,
+            None,
+            false,
+            vec![],
+        )
+    }
+
+    #[test]
+    fn reload_removes_uncommented_unchanged_file_and_discovers_from_empty() {
+        let mut state = state_with_lines(100);
+        let new_file = state.files[0].clone();
+        let unchanged = unchanged_version(&new_file);
+        state.replace_file("src/a.rs", Some(unchanged), false);
+        assert!(state.files.is_empty());
+        assert!(state.selection.is_none());
+        assert_eq!(state.file_pane_index, 0);
+        state.replace_file("src/a.rs", Some(new_file), false);
+        assert_eq!(state.files.len(), 1);
+        assert!(state.selected_range().is_some());
+    }
+
+    #[test]
+    fn reload_keeps_commented_unchanged_file_until_last_comment_is_deleted() {
+        let mut state = state_with_lines(100);
+        let id = state.add_comment("keep feedback").unwrap();
+        let unchanged = unchanged_version(&state.files[0]);
+        state.replace_file("src/a.rs", Some(unchanged), false);
+        assert_eq!(state.files.len(), 1);
+        assert_eq!(state.files[0].status, FileStatus::Unchanged);
+        assert_eq!(state.comments[0].body, "keep feedback");
+        assert!(state.select_comment(id).is_some());
+        assert!(state.delete_comment(id));
+        assert!(state.files.is_empty());
+        assert!(state.comments.is_empty());
+        assert!(state.selection.is_none());
+    }
+
+    #[test]
+    fn discovery_and_removal_preserve_unrelated_selection_and_sorted_files() {
+        let mut state = state_with_lines(100);
+        let mut discovered = state.files[0].clone();
+        discovered.path = "a/new.rs".into();
+        let selection = state.selection.clone();
+        state.replace_file("a/new.rs", Some(discovered), false);
+        assert_eq!(state.files[0].path, "a/new.rs");
+        assert_eq!(state.file_pane_index, 1);
+        assert_eq!(state.selection, selection);
+        state.replace_file("a/new.rs", None, true);
+        assert_eq!(state.file_pane_index, 0);
+        assert_eq!(state.selection, selection);
     }
 
     #[test]

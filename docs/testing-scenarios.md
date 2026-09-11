@@ -512,3 +512,15 @@ scenarios plus commit snapshots and the small-terminal commit picker.
 - Markdown/XML and saved review files preserve exact selected source/target branch names and frozen commit IDs.
 - Archive history names the reviewed source branch even from an unrelated checkout.
 - CLI: `review --source stacked --branch stack/second --target stack/first`.
+
+## Live changeset reconciliation
+
+- In PR-style and uncommitted reviews, reverted files without comments disappear.
+- Reverted files with saved comments remain until their last comment is deleted.
+- Newly modified tracked files and new untracked files enter an already open review.
+- Index-only changes and linked-worktree Git metadata trigger reconciliation.
+- After the last diff disappears, keep the TUI open and discover future changes.
+- Preserve unrelated selections when files are inserted, removed, or renamed.
+- Cancel a draft if its attachment disappears rather than moving it to another file.
+- Ignore UI visibility differences and access/lock/object events when deciding to reload.
+- Static commit and stacked snapshots remain frozen.

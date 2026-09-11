@@ -350,11 +350,21 @@ impl<'a> ReviewApp<'a> {
                 return true;
             }
         };
+        if refreshes.is_empty() && batch.warning.is_none() {
+            return false;
+        }
+        let mut editor_path = self
+            .state
+            .selected_range()
+            .map(|(path, _, _)| path.to_owned());
         let mut moved = 0;
         let mut detached = 0;
         let mut deleted = 0;
         for refresh in refreshes {
             let new_path = refresh.file.as_ref().map(|file| file.path.clone());
+            if editor_path.as_deref() == Some(refresh.old_path.as_str()) {
+                editor_path.clone_from(&new_path);
+            }
             let outcome = self.state.replace_file(
                 &refresh.old_path,
                 refresh.file,
@@ -372,12 +382,20 @@ impl<'a> ReviewApp<'a> {
                 .editing_comment_id
                 .is_none_or(|id| self.state.comments.iter().any(|comment| comment.id == id));
             if !edited_exists
-                || (self.editing_comment_id.is_none() && self.state.selected_range().is_none())
+                || (self.editing_comment_id.is_none()
+                    && (editor_path.is_none()
+                        || self.state.selected_range().map(|(path, _, _)| path)
+                            != editor_path.as_deref()))
             {
                 self.close_comment();
             }
         }
         self.sync_comment_selection();
+        if self.state.files.is_empty() {
+            self.review_scroll = 0;
+            self.file_scroll = 0;
+            self.comment_scroll = 0;
+        }
         self.ensure_selected_visible();
         self.previous_frame = None;
         self.status = batch.warning.unwrap_or_else(|| {
@@ -703,6 +721,16 @@ impl<'a> ReviewApp<'a> {
     fn draw_review(&mut self, frame: &mut RenderFrame, x: u16, width: u16, height: u16) {
         let items = self.state.document_items();
         if items.is_empty() {
+            draw_region_line(
+                frame,
+                x,
+                0,
+                width,
+                &StyledLine::plain(
+                    "No changes to review. Waiting for file changes.",
+                    Style::default(),
+                ),
+            );
             return;
         }
         self.review_scroll = self.review_scroll.min(items.len() - 1);
@@ -1254,6 +1282,9 @@ impl<'a> ReviewApp<'a> {
     }
 
     fn handle_file_key(&mut self, key: KeyEvent) {
+        if self.state.files.is_empty() {
+            return;
+        }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.move_file_tree(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_file_tree(1),
@@ -2724,6 +2755,26 @@ mod tests {
             false,
             vec![],
         )
+    }
+
+    #[test]
+    fn empty_live_review_accepts_navigation_and_new_files() {
+        let mut state = state_with_files(0);
+        let mut app = ReviewApp::new(&mut state);
+        for key in [
+            KeyCode::Char('T'),
+            KeyCode::Tab,
+            KeyCode::Enter,
+            KeyCode::Down,
+            KeyCode::PageDown,
+            KeyCode::Char('e'),
+        ] {
+            app.handle_key(KeyEvent::new(key, KeyModifiers::NONE));
+        }
+        let new_file = file_with_status(FileStatus::Added);
+        app.state.replace_file("tree.rs", Some(new_file), false);
+        assert_eq!(app.state.files.len(), 1);
+        assert!(app.state.active_document_index().is_some());
     }
 
     #[test]

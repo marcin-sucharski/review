@@ -57,14 +57,24 @@ def check(ok, label):
         raise AssertionError(label + '; artifacts ' + str(root))
     print('PASS ' + label, flush=True)
 
-def start(args=''):
+def wait_for(predicate, label):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if predicate(cap()):
+            check(True, label)
+            return
+        time.sleep(0.1)
+    check(False, label)
+
+
+def start(args='', directory=repo):
     command = (
         "unset NO_COLOR; "
         f"export XDG_DATA_HOME={shlex.quote(str(root / 'data'))}; "
         f"{shlex.quote(binary)} {args}; "
         "echo REVIEW_EXIT:$?; exec bash --noprofile --norc"
     )
-    tm('respawn-pane', '-k', '-t', 'run:0.0', '-c', str(repo),
+    tm('respawn-pane', '-k', '-t', 'run:0.0', '-c', str(directory),
        'bash -c ' + shlex.quote(command))
     time.sleep(0.45)
 
@@ -302,6 +312,53 @@ try:
     comment('first layer comment')
     quit()
     check('source branch stack/first' in cap() and 'target branch master' in cap(), 'stacked CLI output names')
+    reload_repo = root / 'reload'
+    reload_repo.mkdir()
+    def reload_git(*args):
+        return run('git', *args, cwd=reload_repo)
+    reload_git('init', '-q', '-b', 'main')
+    reload_git('config', 'user.email', 'test@example.invalid')
+    reload_git('config', 'user.name', 'Reload Regression')
+    (reload_repo / 'active.txt').write_text('base active\n')
+    (reload_repo / 'tracked.txt').write_text('base tracked\n')
+    reload_git('add', '.')
+    reload_git('commit', '-qm', 'base')
+    reload_git('checkout', '-qb', 'feature')
+    (reload_repo / 'active.txt').write_text('modified active\n')
+    start('--source branch --target main --stdout', directory=reload_repo)
+    keys('T')
+    (reload_repo / 'tracked.txt').write_text('modified tracked\n')
+    wait_for(lambda text: 'tracked.txt' in text, 'reload discovers newly modified tracked file')
+    (reload_repo / 'new.txt').write_text('new untracked content\n')
+    wait_for(lambda text: 'new.txt' in text, 'reload discovers new untracked file')
+    keys('Enter')
+    literal('draft must not move')
+    (reload_repo / 'active.txt').write_text('base active\n')
+    wait_for(lambda text: 'active.txt' not in text, 'reload removes reverted uncommented PR file')
+    check('draft must not move' not in cap(), 'reload cancels draft on removed file')
+    literal('/modified tracked')
+    keys('Enter')
+    comment('retain this feedback')
+    (reload_repo / 'tracked.txt').write_text('base tracked\n')
+    wait_for(lambda text: 'No differences from the review base' in text and 'retain this feedback' in text, 'reload retains reverted file with comments')
+    keys('BSpace')
+    wait_for(lambda text: 'tracked.txt' not in text, 'deleting last comment removes unchanged file')
+    (reload_repo / 'new.txt').unlink()
+    wait_for(lambda text: 'No changes to review.' in text, 'reload can reach empty review')
+    keys('Tab', 'Enter', 'Down')
+    (reload_repo / 'fresh.txt').write_text('new after empty\n')
+    wait_for(lambda text: 'fresh.txt' in text, 'reload discovers file after empty review')
+    keys('Enter')
+    check('Untracked file' in cap(), 'reload new file metadata')
+    reload_git('add', 'fresh.txt')
+    wait_for(lambda text: 'fresh.txt' in text and 'Untracked file' not in text, 'reload observes index-only staging')
+    quit()
+    start('--source uncommitted --stdout', directory=reload_repo)
+    (reload_repo / 'fresh.txt').unlink()
+    wait_for(lambda text: 'No changes to review.' in text, 'uncommitted reload removes vanished change')
+    (reload_repo / 'later.txt').write_text('later change\n')
+    wait_for(lambda text: 'later.txt' in text, 'uncommitted reload discovers later file')
+    quit()
     for index in range(22):
         git('commit', '--allow-empty', '-qm', f'picker-{index:02d} ' + 'long subject ' * 12)
     tm('resize-window', '-t', 'run:0', '-x', '80', '-y', '16')

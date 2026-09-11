@@ -358,7 +358,7 @@ fn refresh_reloads_reverts_and_deletes_against_the_frozen_base() {
 }
 
 #[test]
-fn refresh_follows_tracked_and_untracked_renames_but_ignores_unrelated_files() {
+fn refresh_follows_tracked_and_untracked_renames_and_discovers_new_files() {
     let repo = TempRepo::new();
     repo.write("tracked.txt", "base\nsecond\nthird\n");
     repo.commit_all("base");
@@ -368,7 +368,7 @@ fn refresh_follows_tracked_and_untracked_renames_but_ignores_unrelated_files() {
 
     repo.git(&["mv", "tracked.txt", "renamed.txt"]);
     fs::rename(repo.path().join("added.txt"), repo.path().join("moved.txt")).unwrap();
-    repo.write("unrelated.txt", "ignore\n");
+    repo.write("unrelated.txt", "new inventory entry\n");
     let touched = HashSet::from([
         "tracked.txt".to_owned(),
         "renamed.txt".to_owned(),
@@ -383,7 +383,8 @@ fn refresh_follows_tracked_and_untracked_renames_but_ignores_unrelated_files() {
         .collect::<Vec<_>>();
     assert!(paths.contains(&"renamed.txt"));
     assert!(paths.contains(&"moved.txt"));
-    assert!(!paths.contains(&"unrelated.txt"));
+    assert!(paths.contains(&"unrelated.txt"));
+    assert_eq!(paths.len(), 3);
 
     let renamed = refreshed
         .iter()
@@ -433,6 +434,119 @@ fn deleting_an_added_reviewed_file_yields_no_replacement() {
 
     assert!(refreshed[0].physically_deleted);
     assert!(refreshed[0].file.is_none());
+}
+
+#[test]
+fn refresh_does_not_treat_an_existing_identical_file_as_a_rename() {
+    let repo = TempRepo::new();
+    repo.write("base.txt", "base\n");
+    repo.commit_all("base");
+    repo.write("added-a.txt", "identical\n");
+    repo.write("added-b.txt", "identical\n");
+    let (source, files) = collect_uncommitted(repo.path()).unwrap();
+    fs::remove_file(repo.path().join("added-a.txt")).unwrap();
+    let refreshed = refresh_reviewed_files(
+        repo.path(),
+        &source,
+        &files,
+        &HashSet::<String>::new(),
+        true,
+    )
+    .unwrap();
+    assert_eq!(refreshed.len(), 1);
+    assert_eq!(refreshed[0].old_path, "added-a.txt");
+    assert!(refreshed[0].file.is_none());
+    assert!(refreshed[0].physically_deleted);
+}
+
+#[test]
+fn branch_refresh_reconciles_reverts_new_files_and_index_only_events() {
+    let repo = TempRepo::new();
+    repo.write("revert.txt", "base\n");
+    repo.write("later.txt", "base\n");
+    repo.write("stable.txt", "base\n");
+    repo.commit_all("base");
+    repo.git(&["checkout", "-qb", "feature"]);
+    repo.write("revert.txt", "branch change\n");
+    repo.write("stable.txt", "persistent branch change\n");
+    repo.commit_all("branch changes");
+    let (source, files) = collect_branch_comparison(repo.path(), "main").unwrap();
+    repo.write("revert.txt", "base\n");
+    repo.write("later.txt", "new tracked change\n");
+    repo.write("new.txt", "new untracked file\n");
+    let refreshed = refresh_reviewed_files(
+        repo.path(),
+        &source,
+        &files,
+        &HashSet::from(["revert.txt".to_owned()]),
+        false,
+    )
+    .unwrap();
+    assert_eq!(refreshed.len(), 3);
+    assert!(!refreshed.iter().any(|entry| entry.old_path == "stable.txt"));
+    let reverted = refreshed
+        .iter()
+        .find(|entry| entry.old_path == "revert.txt")
+        .unwrap();
+    assert_eq!(
+        reverted.file.as_ref().unwrap().status,
+        FileStatus::Unchanged
+    );
+    for path in ["later.txt", "new.txt"] {
+        let entry = refreshed
+            .iter()
+            .find(|entry| entry.old_path == path)
+            .unwrap();
+        assert_eq!(entry.file.as_ref().unwrap().path, path);
+        assert!(!entry.physically_deleted);
+    }
+    let mut reviewed = files;
+    for entry in refreshed {
+        reviewed.retain(|file| file.path != entry.old_path);
+        reviewed.extend(entry.file);
+    }
+    // Staging an existing untracked file only changes the index; the refresh
+    // must update its metadata without resetting the other reviewed files.
+    repo.git(&["add", "new.txt"]);
+    let staged = refresh_reviewed_files(
+        repo.path(),
+        &source,
+        &reviewed,
+        &HashSet::from([".git/index".to_owned()]),
+        true,
+    )
+    .unwrap();
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].old_path, "new.txt");
+    assert!(
+        !staged[0]
+            .file
+            .as_ref()
+            .unwrap()
+            .metadata
+            .iter()
+            .any(|entry| entry == "Untracked file")
+    );
+    for entry in staged {
+        reviewed.retain(|file| file.path != entry.old_path);
+        reviewed.extend(entry.file);
+    }
+    assert!(
+        refresh_reviewed_files(
+            repo.path(),
+            &source,
+            &reviewed,
+            &HashSet::<String>::new(),
+            true
+        )
+        .unwrap()
+        .is_empty()
+    );
+    // A review whose last changed file was removed can discover later edits.
+    let discovered =
+        refresh_reviewed_files(repo.path(), &source, &[], &HashSet::<String>::new(), false)
+            .unwrap();
+    assert_eq!(discovered.len(), 3);
 }
 
 #[test]
@@ -723,4 +837,30 @@ fn stacked_reviews_reject_non_branches_and_empty_comparisons() {
         let error = collect_stacked_comparison(repo.path(), "main", target).unwrap_err();
         assert!(matches!(error, ReviewError::NoChanges(_)), "{error}");
     }
+}
+
+#[test]
+fn refresh_ignores_ui_expansion_when_only_ignored_files_change() {
+    let repo = TempRepo::new();
+    let lines = (0..200)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    repo.write("file.txt", &lines);
+    repo.write(".gitignore", "*.tmp\n");
+    repo.commit_all("base");
+    repo.write("file.txt", lines.replace("line 100\n", "changed\n"));
+    let (source, mut files) = collect_uncommitted(repo.path()).unwrap();
+    let end = files[0].lines.len() - 1;
+    files[0].add_visible_interval(0, end);
+    repo.write("ignored.tmp", "unrelated editor file\n");
+    let updates = refresh_reviewed_files(
+        repo.path(),
+        &source,
+        &files,
+        &HashSet::from(["ignored.tmp".to_owned()]),
+        false,
+    )
+    .unwrap();
+    assert!(updates.is_empty());
 }

@@ -23,6 +23,7 @@ pub struct MonitorBatch {
 
 pub struct FileMonitor {
     root: PathBuf,
+    git_dirs: Vec<PathBuf>,
     _watcher: RecommendedWatcher,
     receiver: Receiver<MonitorMessage>,
     pending_paths: HashSet<String>,
@@ -34,6 +35,10 @@ pub struct FileMonitor {
 
 impl FileMonitor {
     pub fn new(root: &Path) -> Result<Self> {
+        let root = root
+            .canonicalize()
+            .map_err(|error| ReviewError::io("could not resolve watched directory", error))?;
+        let git_dirs = git_metadata_directories(&root);
         let (sender, receiver) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
             let message = match result {
@@ -47,12 +52,36 @@ impl FileMonitor {
         })?;
         let _ = watcher.configure(Config::default().with_follow_symlinks(false));
         watcher
-            .watch(root, RecursiveMode::Recursive)
+            .watch(&root, RecursiveMode::Recursive)
             .map_err(|error| {
                 ReviewError::Message(format!("could not monitor {}: {error}", root.display()))
             })?;
+        for directory in &git_dirs {
+            if !directory.starts_with(&root) {
+                watcher
+                    .watch(directory, RecursiveMode::NonRecursive)
+                    .map_err(|error| {
+                        ReviewError::Message(format!(
+                            "could not monitor {}: {error}",
+                            directory.display()
+                        ))
+                    })?;
+                let refs = directory.join("refs");
+                if refs.is_dir() {
+                    watcher
+                        .watch(&refs, RecursiveMode::Recursive)
+                        .map_err(|error| {
+                            ReviewError::Message(format!(
+                                "could not monitor {}: {error}",
+                                refs.display()
+                            ))
+                        })?;
+                }
+            }
+        }
         Ok(Self {
-            root: root.to_path_buf(),
+            root,
+            git_dirs,
             _watcher: watcher,
             receiver,
             pending_paths: HashSet::new(),
@@ -63,10 +92,10 @@ impl FileMonitor {
         })
     }
 
-    pub fn poll(&mut self, reviewed_paths: &[String]) -> Option<MonitorBatch> {
+    pub fn poll(&mut self, _reviewed_paths: &[String]) -> Option<MonitorBatch> {
         while !self.disconnected {
             match self.receiver.try_recv() {
-                Ok(MonitorMessage::Event(event)) => self.record_event(event, reviewed_paths),
+                Ok(MonitorMessage::Event(event)) => self.record_event(event),
                 Ok(MonitorMessage::Error(error)) => {
                     self.refresh_all = true;
                     self.warning = Some(format!("File monitor warning: {error}"));
@@ -96,7 +125,7 @@ impl FileMonitor {
         })
     }
 
-    fn record_event(&mut self, event: Event, reviewed_paths: &[String]) {
+    fn record_event(&mut self, event: Event) {
         if matches!(event.kind, EventKind::Access(_)) {
             return;
         }
@@ -106,19 +135,28 @@ impl FileMonitor {
         }
         let mut relevant = false;
         for path in event.paths {
+            if let Some(relative) = self
+                .git_dirs
+                .iter()
+                .find_map(|directory| path.strip_prefix(directory).ok())
+            {
+                if relevant_git_metadata(relative) {
+                    self.refresh_all = true;
+                    relevant = true;
+                }
+                continue;
+            }
             let Some(relative) = self.relative_path(&path) else {
                 continue;
             };
-            if relative == ".git" || relative.starts_with(".git/") {
+            if relative == ".git" {
+                self.refresh_all = true;
+            } else if relative.starts_with(".git/") {
                 continue;
-            }
-            if reviewed_paths
-                .iter()
-                .any(|reviewed| paths_overlap(reviewed, &relative))
-            {
+            } else {
                 self.pending_paths.insert(relative);
-                relevant = true;
             }
+            relevant = true;
         }
         if relevant {
             self.deadline = Some(Instant::now() + DEBOUNCE);
@@ -132,14 +170,45 @@ impl FileMonitor {
     }
 }
 
-fn paths_overlap(left: &str, right: &str) -> bool {
-    left == right
-        || left
-            .strip_prefix(right)
-            .is_some_and(|suffix| suffix.starts_with('/'))
-        || right
-            .strip_prefix(left)
-            .is_some_and(|suffix| suffix.starts_with('/'))
+fn git_metadata_directories(root: &Path) -> Vec<PathBuf> {
+    let marker = root.join(".git");
+    let directory = if marker.is_dir() {
+        marker
+    } else if let Ok(contents) = std::fs::read_to_string(&marker) {
+        let Some(path) = contents.trim().strip_prefix("gitdir: ") else {
+            return Vec::new();
+        };
+        root.join(path)
+    } else {
+        return Vec::new();
+    };
+    let Ok(directory) = directory.canonicalize() else {
+        return Vec::new();
+    };
+    let mut directories = vec![directory.clone()];
+    if let Ok(common) = std::fs::read_to_string(directory.join("commondir"))
+        && let Ok(common) = directory.join(common.trim()).canonicalize()
+        && !directories.contains(&common)
+    {
+        directories.push(common);
+    }
+    directories
+}
+
+fn relevant_git_metadata(path: &Path) -> bool {
+    if path
+        .components()
+        .any(|part| part.as_os_str().to_string_lossy().ends_with(".lock"))
+    {
+        return false;
+    }
+    path == Path::new("index")
+        || path == Path::new("HEAD")
+        || path == Path::new("packed-refs")
+        || path == Path::new("info/exclude")
+        || path == Path::new("config")
+        || path == Path::new("config.worktree")
+        || path.starts_with("refs")
 }
 
 #[cfg(test)]
@@ -152,11 +221,27 @@ mod tests {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
-    fn overlap_is_path_component_aware() {
-        assert!(paths_overlap("src/a.rs", "src/a.rs"));
-        assert!(paths_overlap("src/a.rs", "src"));
-        assert!(!paths_overlap("src/a.rs", "src/a.rs.tmp"));
-        assert!(!paths_overlap("src/a.rs", ".git/index"));
+    fn metadata_filter_ignores_git_feedback_and_locks() {
+        for path in [
+            "index",
+            "HEAD",
+            "packed-refs",
+            "refs/heads/topic",
+            "info/exclude",
+            "config",
+            "config.worktree",
+        ] {
+            assert!(relevant_git_metadata(Path::new(path)), "{path}");
+        }
+        for path in [
+            "index.lock",
+            "refs/heads/topic.lock",
+            "objects/ab/cd",
+            "logs/HEAD",
+            "",
+        ] {
+            assert!(!relevant_git_metadata(Path::new(path)), "{path}");
+        }
     }
 
     #[test]
@@ -188,5 +273,113 @@ mod tests {
 
         let batch = batch.expect("watch event should arrive before timeout");
         assert!(batch.paths.contains("watched.txt"));
+    }
+    struct Repository(PathBuf);
+
+    impl Repository {
+        fn new() -> Self {
+            let directory = std::env::temp_dir().join(format!(
+                "review-discovery-watch-{}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&directory).unwrap();
+            let repository = Self(directory);
+            repository.git(&["init", "-q", "-b", "main"]);
+            fs::write(repository.0.join("tracked.txt"), "before\n").unwrap();
+            repository.git(&["add", "."]);
+            repository.git(&[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "base",
+            ]);
+            repository
+        }
+
+        fn git(&self, args: &[&str]) {
+            let output = std::process::Command::new("git")
+                .current_dir(&self.0)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    impl Drop for Repository {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn await_batch(
+        monitor: &mut FileMonitor,
+        matches: impl Fn(&MonitorBatch) -> bool,
+    ) -> MonitorBatch {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Some(batch) = monitor.poll(&["already-reviewed.txt".to_owned()])
+                && matches(&batch)
+            {
+                return batch;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("expected watcher event before timeout");
+    }
+
+    #[test]
+    fn real_watcher_discovers_new_unreviewed_and_ignore_files() {
+        let repository = Repository::new();
+        let mut monitor = FileMonitor::new(&repository.0).unwrap();
+        for name in ["new.txt", "tracked.txt", ".gitignore"] {
+            fs::write(repository.0.join(name), "changed\n").unwrap();
+            await_batch(&mut monitor, |batch| batch.paths.contains(name));
+        }
+        fs::remove_file(repository.0.join("new.txt")).unwrap();
+        await_batch(&mut monitor, |batch| batch.paths.contains("new.txt"));
+    }
+
+    #[test]
+    fn real_watcher_reconciles_index_only_change_in_linked_worktree() {
+        let repository = Repository::new();
+        let checkout = repository.0.join("checkout");
+        repository.git(&[
+            "worktree",
+            "add",
+            "-qb",
+            "linked",
+            checkout.to_str().unwrap(),
+        ]);
+        let mut monitor = FileMonitor::new(&checkout).unwrap();
+        let output = std::process::Command::new("git")
+            .current_dir(&checkout)
+            .args(["update-index", "--chmod=+x", "tracked.txt"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let batch = await_batch(&mut monitor, |batch| batch.refresh_all);
+        assert!(
+            batch.paths.is_empty(),
+            "index-only event should not imply a worktree edit"
+        );
+        assert_eq!(
+            fs::read_to_string(checkout.join("tracked.txt")).unwrap(),
+            "before\n"
+        );
+        repository.git(&["pack-refs", "--all"]);
+        await_batch(&mut monitor, |batch| batch.refresh_all);
     }
 }

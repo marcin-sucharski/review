@@ -33,6 +33,7 @@ where
         .map(|arg| arg.as_ref().to_os_string())
         .collect::<Vec<_>>();
     let output = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .args(&args)
         .current_dir(root)
         .output()
@@ -496,9 +497,6 @@ pub fn refresh_reviewed_files<S: std::hash::BuildHasher>(
     let mut refreshes = Vec::new();
 
     for previous in reviewed {
-        if !refresh_all && !path_is_touched(&previous.path, touched_paths) {
-            continue;
-        }
         let candidate = inventory
             .iter()
             .enumerate()
@@ -509,6 +507,7 @@ pub fn refresh_reviewed_files<S: std::hash::BuildHasher>(
                     .iter()
                     .enumerate()
                     .filter(|(index, _)| !used.contains(index))
+                    .filter(|(_, file)| !reviewed.iter().any(|prior| prior.path == file.path))
                     .find(|(_, file)| {
                         let same_base = match (&previous.old_path, &file.old_path) {
                             (Some(previous_old), Some(file_old)) => previous_old == file_old,
@@ -520,7 +519,7 @@ pub fn refresh_reviewed_files<S: std::hash::BuildHasher>(
                                 && file.old_path.as_deref() == Some(previous.path.as_str()))
                             || (previous.status == FileStatus::Added
                                 && file.status == FileStatus::Added
-                                && touched_paths.contains(&file.path)
+                                && (refresh_all || path_is_touched(&file.path, touched_paths))
                                 && same_review_content(previous, file))
                     })
             });
@@ -530,13 +529,26 @@ pub fn refresh_reviewed_files<S: std::hash::BuildHasher>(
             Some(file.clone())
         } else if read_worktree(root, &previous.path)?.is_some() {
             Some(build_unchanged(root, previous, &previous.path)?)
-        } else if let Some(base_path) = previous.old_path.as_deref().filter(|base_path| {
-            touched_paths.contains(*base_path) && fs::symlink_metadata(root.join(base_path)).is_ok()
-        }) {
+        } else if let Some(base_path) = previous
+            .old_path
+            .as_deref()
+            .filter(|base_path| fs::symlink_metadata(root.join(base_path)).is_ok())
+        {
             Some(build_unchanged(root, previous, base_path)?)
         } else {
             None
         };
+        if file.as_ref().is_some_and(|file| {
+            file.path == previous.path
+                && file.old_path == previous.old_path
+                && file.status == previous.status
+                && file.language == previous.language
+                && file.lines == previous.lines
+                && file.binary == previous.binary
+                && file.metadata == previous.metadata
+        }) {
+            continue;
+        }
         let physically_deleted = file
             .as_ref()
             .is_none_or(|file| fs::symlink_metadata(root.join(&file.path)).is_err());
@@ -544,6 +556,16 @@ pub fn refresh_reviewed_files<S: std::hash::BuildHasher>(
             old_path: previous.path.clone(),
             file,
             physically_deleted,
+        });
+    }
+    for (index, file) in inventory.into_iter().enumerate() {
+        if used.contains(&index) {
+            continue;
+        }
+        refreshes.push(FileRefresh {
+            old_path: file.path.clone(),
+            physically_deleted: fs::symlink_metadata(root.join(&file.path)).is_err(),
+            file: Some(file),
         });
     }
     Ok(refreshes)
