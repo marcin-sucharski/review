@@ -7,6 +7,7 @@ Run from any directory after building target/release/review:
 Requires Python 3, Git, Bash, and tmux. Captures and fixture repositories remain
 in the printed temporary directory for inspection. Only this test's tmux server
 is stopped; the user's tmux sessions are untouched.
+Set REVIEW_BINARY to exercise an installed or Nix-built executable instead.
 """
 import json
 import os
@@ -17,7 +18,7 @@ import subprocess as sp
 import tempfile
 import time
 
-binary = str(pathlib.Path(__file__).resolve().parents[1] / 'target/release/review')
+binary = os.environ.get('REVIEW_BINARY', str(pathlib.Path(__file__).resolve().parents[1] / 'target/release/review'))
 root = pathlib.Path(tempfile.mkdtemp(prefix='review-live-'))
 repo = root / 'repo'
 repo.mkdir()
@@ -46,10 +47,43 @@ def literal(text):
     keys('-l', text)
 
 def cap(name=None, ansi=False):
-    s = tm('capture-pane', '-p', *(['-e'] if ansi else []), '-t', 'run:0.0')
+    s = tm('capture-pane', '-p', *(['-e', '-N'] if ansi else []), '-t', 'run:0.0')
     if name:
         (root / (name + '.txt')).write_text(s)
     return s
+
+def colors_at(ansi, text, start=0):
+    foreground = background = None
+    for match in re.finditer(r'\x1b\[([0-9;]*)m', ansi[:ansi.index(text, start)]):
+        codes = [int(code or '0') for code in match[1].split(';')]
+        index = 0
+        while index < len(codes):
+            code = codes[index]
+            if code == 0:
+                foreground = background = None
+            elif code == 39:
+                foreground = None
+            elif code == 49:
+                background = None
+            elif 30 <= code <= 37:
+                foreground = code - 30
+            elif 40 <= code <= 47:
+                background = code - 40
+            elif code in (38, 48) and codes[index + 1:index + 2] == [5]:
+                if code == 38:
+                    foreground = codes[index + 2]
+                else:
+                    background = codes[index + 2]
+                index += 2
+            elif code in (38, 48) and codes[index + 1:index + 2] == [2]:
+                color = tuple(codes[index + 2:index + 5])
+                if code == 38:
+                    foreground = color
+                else:
+                    background = color
+                index += 4
+            index += 1
+    return foreground, background
 
 def check(ok, label):
     if not ok:
@@ -67,9 +101,9 @@ def wait_for(predicate, label):
     check(False, label)
 
 
-def start(args='', directory=repo):
+def start(args='', directory=repo, no_color=True):
     command = (
-        "unset NO_COLOR; "
+        ("export NO_COLOR=1; " if no_color else "unset NO_COLOR; ") +
         f"export XDG_DATA_HOME={shlex.quote(str(root / 'data'))}; "
         f"{shlex.quote(binary)} {args}; "
         "echo REVIEW_EXIT:$?; exec bash --noprofile --norc"
@@ -81,6 +115,8 @@ def start(args='', directory=repo):
 def quit():
     literal(':q')
     keys('Enter')
+    wait_for(lambda text: 'Delivery target' in text or 'REVIEW_EXIT:' in text,
+             'review quit reaches delivery or exits')
 
 def comment(text):
     keys('Enter')
@@ -111,6 +147,8 @@ fixtures = {'a.py': 'value = 42',
 for name, source in fixtures.items():
     write(name, source + '\n')
 write('long.txt', ''.join((f'line {i:03d}\n' for i in range(250))))
+background_context = ''.join(f'plain background context {i:02d}\n' for i in range(30))
+write('background.txt', background_context)
 write('deleted.txt', 'delete me\n')
 write('old.txt', 'rename me\n' * 10)
 git('add', '.')
@@ -130,6 +168,7 @@ git('checkout', '-q', 'feature')
 for name, source in fixtures.items():
     write(name, source + '\n' + source + '\n')
 write('long.txt', ''.join((('CHANGED' if i in (100, 200) else 'line') + f' {i:03d}\n' for i in range(250))))
+write('background.txt', background_context.replace('context 05', 'changed 05'))
 git('rm', 'deleted.txt')
 git('mv', 'old.txt', 'renamed.txt')
 write('staged.txt', 'staged change\n')
@@ -137,6 +176,20 @@ git('add', 'staged.txt')
 write('unstaged.txt', 'untracked change\n')
 try:
     tm('new-session', '-d', '-s', 'run', '-x', '280', '-y', '40', '-c', str(repo), 'bash --noprofile --norc')
+    for scheme, no_color in [('dark', False), ('light', False), ('dark', True), ('light', True)]:
+        tm('set-option', '-g', 'window-style',
+           'fg=colour231,bg=colour16' if scheme == 'dark' else 'fg=colour16,bg=colour231')
+        label = ' on ' + scheme + (' with NO_COLOR=1' if no_color else ' without NO_COLOR')
+        start(no_color=no_color)
+        check(colors_at(cap(ansi=True), 'PR-style') == (None, None), 'source menu inherits terminal defaults' + label)
+        check(colors_at(cap(ansi=True), ' ' * 50)[1] is None, 'source menu padding inherits terminal background' + label)
+        keys('Enter')
+        check(colors_at(cap(ansi=True), 'Target branch') == (None, None), 'target picker inherits terminal defaults' + label)
+        keys('Enter')
+        wait_for(lambda text: 'Tab switches panes' in text, 'review opened from target picker' + label)
+        check(colors_at(cap(ansi=True), '.gitignore')[1] is None, 'review inherits terminal background after menus' + label)
+        keys('C-c', 'C-c')
+        check(colors_at(cap(ansi=True), 'REVIEW_EXIT:130') == (None, None), 'terminal colors restored after interrupt' + label)
     start()
     s = cap('menu')
     check(s.index('PR-style') < s.index('uncommitted'), 'menu PR before uncommitted')
@@ -146,6 +199,8 @@ try:
     check('REVIEW_EXIT:130' in cap(), 'menu Ctrl+C')
     start('--source uncommitted --stdout')
     check('Files' not in cap().splitlines()[0], 'file pane hidden')
+    check(colors_at(cap(ansi=True), '.gitignore')[1] is None, 'header inherits terminal background')
+    check(colors_at(cap(ansi=True), ' ' * 50)[1] is None, 'padding inherits terminal background')
     keys('T')
     check('Files' in cap(), 'T file pane toggle')
     keys('Tab', 'Down', 'Enter')
@@ -153,6 +208,27 @@ try:
     check('.terraform.lock.hcl' in cap().splitlines()[0].split('│', 1)[1], 'file tree selection')
     keys('Tab', 'Tab')
     cap('focus')
+    start('--source uncommitted --stdout')
+    literal('/plain background context 00')
+    keys('Enter')
+    literal('/')
+    keys('Enter', 'Down')
+    check(colors_at(cap('light_context', ansi=True), 'plain background context 00') == (None, None), 'context inherits terminal foreground and background')
+    keys('T')
+    check(colors_at(cap('light_tree', ansi=True), 'b.md') == (None, None), 'file tree inherits terminal foreground and background')
+    keys('Enter')
+    literal('light background editor')
+    check(colors_at(cap('light_editor', ansi=True), 'light background editor')[1] is None, 'comment editor inherits terminal background')
+    keys('Enter')
+    check(colors_at(cap(ansi=True), 'light background editor')[1] in ((255, 255, 175), (255, 255, 215)), 'saved comment keeps its dedicated background')
+    tm('resize-window', '-t', 'run:0', '-x', '120', '-y', '24')
+    time.sleep(0.15)
+    check(colors_at(cap('light_resized', ansi=True), ' ' * 50)[1] is None, 'padding inherits terminal background after resize')
+    tm('resize-window', '-t', 'run:0', '-x', '280', '-y', '40')
+    time.sleep(0.15)
+    keys('BSpace')
+    quit()
+    check(colors_at(cap('restored_colors', ansi=True), 'REVIEW_EXIT:0') == (None, None), 'terminal default colors restored after review')
     start('--source uncommitted --stdout')
     comment('single comment')
     check('single comment' in cap(), 'single-line comment')
@@ -183,6 +259,7 @@ try:
         quit()
         if choice is not None:
             check('Delivery target' in cap(), 'delivery menu ' + label)
+            check(colors_at(cap(ansi=True), 'Delivery target') == (None, None), 'delivery menu inherits terminal defaults ' + label)
             if choice:
                 keys('Down')
             keys('Enter')
@@ -345,6 +422,9 @@ try:
     wait_for(lambda text: 'tracked.txt' not in text, 'deleting last comment removes unchanged file')
     (reload_repo / 'new.txt').unlink()
     wait_for(lambda text: 'No changes to review.' in text, 'reload can reach empty review')
+    empty = cap('light_empty', ansi=True)
+    last_body_row = sum(len(row) for row in empty.splitlines(keepends=True)[:-2])
+    check(colors_at(empty, ' ' * 100, last_body_row)[1] is None, 'empty review rows inherit terminal background')
     keys('Tab', 'Enter', 'Down')
     (reload_repo / 'fresh.txt').write_text('new after empty\n')
     wait_for(lambda text: 'fresh.txt' in text, 'reload discovers file after empty review')

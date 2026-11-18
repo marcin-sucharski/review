@@ -136,7 +136,9 @@ The UI should visually distinguish:
 - lines with comments,
 - expansion rows.
 
-The style must remain readable in both light and dark terminal themes. Avoid relying only on color; use markers where practical.
+Interactive menus and the normal TUI canvas inherit the terminal's default foreground and background, including context text, row padding, and blank review rows. Added, deleted, selected, search, and comment rows keep their dedicated background colors and contrasting text. Interactive color setup enables those highlights even when NO_COLOR is inherited; leaving each interactive screen restores the previous color-output policy and the terminal's own colors. Avoid relying only on color; use markers where practical.
+
+Diff/comment/selection/search backgrounds use literal RGB colors. Extended ANSI palette entries are theme-dependent: Rex can map index 231 to a dark color and index 16 to a light color. Those entries must not be used as fixed white and black. Syntax accents continue to use the terminal's semantic ANSI colors.
 
 The active selected code line must be visible on every diff background. Added and deleted lines should keep their green/red meaning while using a light selected variant of that background rather than switching to a saturated unrelated color. Selected code lines and comment rows should not use underline; the background highlight is the selection indicator.
 

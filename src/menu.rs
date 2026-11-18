@@ -1,10 +1,12 @@
 use std::io::{self, IsTerminal, Write};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::style::{Attribute, ResetColor, SetAttribute};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::error::{Result, ReviewError};
+use crate::theme::InteractiveColors;
 
 const BRANCH_PAGE_SIZE: usize = 5;
 
@@ -331,13 +333,17 @@ fn select_option_text(title: &str, options: &[MenuOption], stderr: bool) -> Resu
         .ok_or_else(|| ReviewError::InvalidArgument("please select a listed option".to_owned()))
 }
 
-struct RawMode;
+struct RawMode {
+    _colors: InteractiveColors,
+}
 
 impl RawMode {
     fn enter() -> Result<Self> {
         enable_raw_mode()
             .map_err(|error| ReviewError::io("could not enable terminal raw mode", error))?;
-        Ok(Self)
+        Ok(Self {
+            _colors: InteractiveColors::enter(),
+        })
     }
 }
 
@@ -592,12 +598,15 @@ fn replace_menu_rows(
     }
     let rendered_height = rows.len().max(previous_rows.len());
     for index in 0..rendered_height {
-        let old = previous_rows.get(index).map_or("", String::as_str);
         let new = rows.get(index).map_or("", String::as_str);
-        if old != new {
+        if previous_rows.get(index) != rows.get(index) {
             let padding = terminal_width.saturating_sub(new.width());
+            write!(output, "{}{}", SetAttribute(Attribute::Reset), ResetColor)
+                .map_err(|error| ReviewError::io("could not reset menu colors", error))?;
             write!(output, "\r{new}{}", " ".repeat(padding))
                 .map_err(|error| ReviewError::io("could not render menu row", error))?;
+            write!(output, "{}{}", SetAttribute(Attribute::Reset), ResetColor)
+                .map_err(|error| ReviewError::io("could not restore menu colors", error))?;
         }
         write!(output, "\r\n")
             .map_err(|error| ReviewError::io("could not advance menu frame", error))?;

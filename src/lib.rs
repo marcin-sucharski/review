@@ -8,6 +8,7 @@ pub mod menu;
 pub mod model;
 pub mod state;
 pub mod syntax;
+mod theme;
 pub mod tmux;
 pub mod tui;
 pub mod watch;

@@ -28,18 +28,19 @@ use crate::syntax::{
     NUMBER_FOREGROUND, OPERATOR_FOREGROUND, PUNCTUATION_FOREGROUND, STRING_FOREGROUND,
     SyntaxHighlighter, TAG_FOREGROUND, TYPE_FOREGROUND,
 };
+use crate::theme::{HIGHLIGHT_FOREGROUND, InteractiveColors, rgb};
 use crate::tmux::inside_tmux;
 use crate::watch::{FileMonitor, MonitorBatch};
 
 const GUTTER_WIDTH: usize = 9;
 const MOUSE_SCROLL_LINES: usize = 3;
-const ADDITION_BACKGROUND: Color = Color::AnsiValue(194);
-const ADDITION_SELECTION_BACKGROUND: Color = Color::AnsiValue(193);
-const DELETION_BACKGROUND: Color = Color::AnsiValue(224);
-const DELETION_SELECTION_BACKGROUND: Color = Color::AnsiValue(223);
-const COMMENT_BACKGROUND: Color = Color::AnsiValue(230);
-const SEARCH_BACKGROUND: Color = Color::AnsiValue(226);
-const SELECTION_BACKGROUND: Color = Color::AnsiValue(229);
+const ADDITION_BACKGROUND: Color = rgb(215, 255, 215);
+const ADDITION_SELECTION_BACKGROUND: Color = rgb(215, 255, 175);
+const DELETION_BACKGROUND: Color = rgb(255, 215, 215);
+const DELETION_SELECTION_BACKGROUND: Color = rgb(255, 215, 175);
+const COMMENT_BACKGROUND: Color = rgb(255, 255, 215);
+const SEARCH_BACKGROUND: Color = rgb(255, 255, 0);
+const SELECTION_BACKGROUND: Color = rgb(255, 255, 175);
 const INITIAL_STATUS: &str =
     "Tab switches panes. T toggles left pane. e expands file. z centers code. :q quits.";
 const INTERRUPT_WARNING: &str = "Press Ctrl+C again to quit review.";
@@ -154,13 +155,17 @@ struct CommentPaneRow {
     comment: Option<ReviewComment>,
 }
 
-struct TerminalGuard;
+struct TerminalGuard {
+    _colors: InteractiveColors,
+}
 
 impl TerminalGuard {
     fn enter(output: &mut Stdout) -> Result<Self> {
         enable_raw_mode()
             .map_err(|error| ReviewError::io("could not enable terminal raw mode", error))?;
-        let guard = Self;
+        let guard = Self {
+            _colors: InteractiveColors::enter(),
+        };
         execute!(
             output,
             EnterAlternateScreen,
@@ -2440,13 +2445,8 @@ fn render_frame<W: Write>(
 }
 
 fn render_frame_row<W: Write>(output: &mut W, frame: &RenderFrame, y: u16) -> Result<()> {
-    queue!(
-        output,
-        MoveTo(0, y),
-        SetAttribute(Attribute::Reset),
-        ResetColor
-    )
-    .map_err(|error| ReviewError::io("could not draw terminal frame", error))?;
+    queue!(output, MoveTo(0, y))
+        .map_err(|error| ReviewError::io("could not draw terminal frame", error))?;
     let mut regions = frame.rows[usize::from(y)].iter().collect::<Vec<_>>();
     regions.sort_by_key(|region| region.x);
     let mut column = 0_u16;
@@ -2477,15 +2477,13 @@ fn draw_line_content<W: Write>(output: &mut W, width: u16, line: &StyledLine) ->
         remaining = remaining.saturating_sub(used);
     }
     if remaining > 0 {
-        queue!(output, SetAttribute(Attribute::Reset))
-            .map_err(|error| ReviewError::io("could not draw terminal UI", error))?;
-        if let Some(background) = line.fill_background {
-            queue!(output, SetBackgroundColor(background))
-                .map_err(|error| ReviewError::io("could not draw terminal UI", error))?;
-        } else {
-            queue!(output, ResetColor)
-                .map_err(|error| ReviewError::io("could not draw terminal UI", error))?;
-        }
+        apply_style(
+            output,
+            Style {
+                background: line.fill_background,
+                ..Style::default()
+            },
+        )?;
         queue!(output, Print(" ".repeat(remaining)))
             .map_err(|error| ReviewError::io("could not draw terminal UI", error))?;
     }
@@ -2496,26 +2494,26 @@ fn write_blank_cells<W: Write>(output: &mut W, count: usize) -> Result<()> {
     if count == 0 {
         return Ok(());
     }
-    queue!(
-        output,
-        SetAttribute(Attribute::Reset),
-        ResetColor,
-        Print(" ".repeat(count))
-    )
-    .map_err(|error| ReviewError::io("could not erase stale terminal cells", error))
+    apply_style(output, Style::default())?;
+    queue!(output, Print(" ".repeat(count)))
+        .map_err(|error| ReviewError::io("could not erase stale terminal cells", error))
 }
 
 fn apply_style<W: Write>(output: &mut W, style: Style) -> Result<()> {
-    queue!(output, SetAttribute(Attribute::Reset), ResetColor)
-        .map_err(|error| ReviewError::io("could not apply terminal style", error))?;
-    if let Some(foreground) = style.foreground {
-        queue!(output, SetForegroundColor(foreground))
-            .map_err(|error| ReviewError::io("could not apply terminal style", error))?;
-    }
-    if let Some(background) = style.background {
-        queue!(output, SetBackgroundColor(background))
-            .map_err(|error| ReviewError::io("could not apply terminal style", error))?;
-    }
+    let foreground = style.foreground.unwrap_or_else(|| {
+        if style.background.is_some() {
+            HIGHLIGHT_FOREGROUND
+        } else {
+            Color::Reset
+        }
+    });
+    queue!(
+        output,
+        SetAttribute(Attribute::Reset),
+        SetForegroundColor(foreground),
+        SetBackgroundColor(style.background.unwrap_or(Color::Reset))
+    )
+    .map_err(|error| ReviewError::io("could not apply terminal style", error))?;
     if style.bold {
         queue!(output, SetAttribute(Attribute::Bold))
             .map_err(|error| ReviewError::io("could not apply terminal style", error))?;
@@ -3182,30 +3180,31 @@ mod tests {
     }
 
     #[test]
-    fn light_terminal_backgrounds_match_the_previous_palette() {
+    fn light_theme_uses_literal_rgb_backgrounds() {
+        assert_eq!(HIGHLIGHT_FOREGROUND, rgb(0, 0, 0));
         assert_eq!(
             code_background(false, LineKind::Addition),
-            Some(Color::AnsiValue(194))
+            Some(rgb(215, 255, 215))
         );
         assert_eq!(
             code_background(true, LineKind::Addition),
-            Some(Color::AnsiValue(193))
+            Some(rgb(215, 255, 175))
         );
         assert_eq!(
             code_background(false, LineKind::Deletion),
-            Some(Color::AnsiValue(224))
+            Some(rgb(255, 215, 215))
         );
         assert_eq!(
             code_background(true, LineKind::Deletion),
-            Some(Color::AnsiValue(223))
+            Some(rgb(255, 215, 175))
         );
         assert_eq!(
             code_background(true, LineKind::Context),
-            Some(Color::AnsiValue(229))
+            Some(rgb(255, 255, 175))
         );
         assert_eq!(code_background(false, LineKind::Context), None);
-        assert_eq!(COMMENT_BACKGROUND, Color::AnsiValue(230));
-        assert_eq!(SEARCH_BACKGROUND, Color::AnsiValue(226));
+        assert_eq!(COMMENT_BACKGROUND, rgb(255, 255, 215));
+        assert_eq!(SEARCH_BACKGROUND, rgb(255, 255, 0));
     }
 
     #[test]
